@@ -290,3 +290,77 @@ the operator widget. Strategy profile picked at Init from a seeded RNG, logged.
 - Decon list needs breach stamps per turret (WeaponFired/EnemyDamaged proximity);
   reclaim only for metal/space.
 - Widget: LuaMessage round-trip is enough for v1; websocket operator later.
+
+## Round 3 refinements (incorporated)
+
+1. Heavy predicate corrected: non-flying && metal cost > **1000** (not 1600); Ogre
+   (riot tank, ~500m) is *not* heavy; the 1000–2999m band is what the user calls
+   "demistriders"; exceptions: Krow (gunship) and Ultimatum (strider). Striders come
+   from the strider hub, demistriders from coupon (free-placement) factories.
+   Classify by runtime `def.cost(metal)` + `human_name()` — never hardcoded costs
+   (they drift between patches; a spot check showed even guessed unitdef costs are
+   unreliable). Pit-Lucifer lure: hold fire (`set_fire_state(0)`) until a Widow-stunned
+   heavy is in range, then release; triggers rarely, fallback = fire on any heavy in
+   range.
+2. Escort rule simplified: nearby army OR no enemy within 400 elmos of the group centre.
+3. Walled mexes: terraform first — either a 60-elmo-deep footprint pit under the mex,
+   or a 60-elmo wall around it. Full ring is expensive → prefer an enemy-facing arc
+   with a gap for constructor access. Encourage near the enemy frontline / hot areas
+   (players and current AIs struggle to crack walled mexes).
+4. Endgame sacrificial swifts are OK; a critically injured swift with dash available
+   should consider a suicide scout run into dense, not-yet-identified areas.
+5–10. Accepted as stated (interception model Eos/Trinity, morph refund on death,
+    turret decon via last-combat stamps, operator widget plan).
+
+## Economy model (new)
+
+- **Power grid**: cylindrical around generators; excess feeds overdrive with multiplier
+  `1 + 0.25·sqrt(excess · Σb²)` (confirmed in `reference/.../economy/grid.rs`; ≈ the
+  `1+sqrt(excess)/4` per-mex form). Mex extraction scales with supplied power → grid
+  mexes early: build wind/solar in the shortest lines between mexes.
+- **Wind**: flat 0–1e scaled by map wind/elevation; build when wind > 60% or base wind
+  near constructors > 0.4; maps with 1.0-wind areas → wind instead of fusion. Keep
+  turbines spaced (rogue raider / Phoenix napalm kills). [verify the elevation rule in
+  LuaRules before encoding thresholds]
+- **Geothermal**: if a geospot is within ~1k elmos of the start or on our half near the
+  border → priority geo project at ~25 m/s with 5–12 buildpower. Keep factories and any
+  >2k building ≥700 elmos from geospots (morph explosion); endgame may relax this but
+  never for superweapons. Morph to adv geo when energy income ≈ 50e without it (90 s
+  job, high priority).
+- **Opening (balanced)**: 1 constructor dedicated to energy; initial ~400–500 metal →
+  1 constructor + 5 raiders; after the factory, capture the 3 surrounding mexes, then 6
+  wind turbines linking them (wind-dependent), then ≥2 solars (2e each); ≥60% of energy
+  demand from static sources unless ≥0.6-wind areas exist.
+- **Fusion timeline**: 1st fusion at 40–50 m/s, stopping other production for it; 2nd
+  fusion after that at lower priority; after the 2nd, only singularity plants.
+  [the "15–25 m/s" phrasing for the 2nd fusion is ambiguous — treat as "after the 1st,
+  lower priority", tune in tests]
+- **Placement**: fusion on a 100-elmo spire, singularity on a 144-elmo spire —
+  terraform the spire BEFORE placing (buildings can't be raised once construction
+  starts). Singularity defense budget: 2 Faradays, or Newton turrets ringing the
+  perimeter, or air supremacy (Swifts, with some requisitioned for lategame scouting,
+  plus Raptors/Magpies vs Odin raids), or ground AA (a jumpbot Moderator on Odin
+  interception near high-risk targets, a Gremlin garrison, or 4 Hacksaws near the
+  target set to ignore targets <300m). Endgame: if the enemy fields 20+ planes, consider
+  an Artemis sited to push its range slightly into enemy territory or ~300 elmos from
+  forward priority targets (e.g. a Cerberus siege camp).
+
+## Adversarial review — round 4
+
+1. Full-ring 60-elmo walls are volume-expensive (a ring, not a pad — see round-2 #5):
+   ship enemy-facing arcs first, A/B ring vs arc vs pit, and keep a constructor gap.
+2. Spire-then-build is load-bearing sequencing: terraform first, then place — if the
+   dig is interrupted the project must re-queue (tag tracking), else the fusion sits
+   on flat ground.
+3. The 700-elmo geospot rule must apply to ALL >2k buildings, not just factories, and
+   the endgame exception must never cover superweapons.
+4. "Stop all production at 40–50 m/s for fusion" opens an army gap — gate on the
+   threatmap (no incursion inbound) or make it an econ-greedy profile choice.
+5. Wind/fusion branching needs map wind data at Init; verify the elevation rule before
+   hardcoding 0.4/0.6 thresholds.
+6. Never hardcode unit costs — classify via runtime `def.cost()`/`human_name()`.
+7. Hacksaw "ignore <300m", Odin/Raptor/Magpie names → resolve to cmd ids/unitdefs at
+   runtime (reference `defs.rs` cmd list has the target-selection commands).
+8. The balanced opening (1 con + 5 raiders) depends on the scout-pool split so raiders
+   don't all die scouting; make the opening a scripted sequence with early-exit
+   conditions.
