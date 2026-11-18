@@ -214,3 +214,79 @@ since bigger maps scale faster): opening ~6, mid ~40, endgame ~80 on small maps.
 10. **Make every experiment an AIOptions toggle** (`porc_budget_pct`, `reserve_metal`,
     `lucifer_on_heavy`, `caretaker_wall=off|front|surround`, `nuke_project`, …) so
     `match.sh`/`series.sh` can A/B with `?key=value` and the results stay comparable.
+
+## Round 2 refinements (incorporated)
+
+1. A strategy profile is chosen at game start (random among a list, or pinned via a
+   `strategy` option + logged seed so benchmarks stay repeatable); when a project
+   completes, the next one starts. The nuke project is prioritised after the first
+   2–3 heavy turrets are on the frontline.
+2. "Heavy" = non-flying unit with metal cost > 1600; morphed commanders are an edge
+   case if under 4000 metal (commanders upgrade repeatedly). Counter plans split:
+   defensive (pit Lucifers, spired Desolators — terrain that wrecks single heavies)
+   vs offensive (Widow shock to paralyze, then hunt by local army/artillery). See the
+   detailed discussion below.
+3. Scout raiders are a split pool: initially ~3 raiders scout (unless they can
+   opportunistically win the fight), then all raiders join raider parties; the scout
+   share grows to 20% of the raider force until special scouts exist (Sparrow, Gremlin,
+   Scythe, Swift, Widow — match by `human_name()`).
+4. Constructor taskgroups get an escort: a small raider force ~100 elmos in front of
+   the constructors facing enemy territory; otherwise the main battlegroup within
+   ~300 elmos; otherwise require no enemy within ~400 elmos. Tuned by A/B tests.
+5. Small terraform jobs have per-job overhead, so prioritise high-yield mexes: read
+   per-spot values (`mex_metal{i}` rules params / `Map_getResourceMapSpotsAverageIncome`),
+   dig ring pits around the best spots (never under the mex itself), give them
+   overdrive + defense priority. Midline-adjacent high-yield spots are prime candidates.
+6. Corrections accepted: unit abilities (e.g. Swift boost) do not drain energy; radar
+   dots are opaque until direct LOS, so intel must come from scouts/saboteurs.
+   10 Swifts + air fac ≈ 2200 metal ≈ one Cyclops — cheap at 80 m/s, and some air
+   presence is needed anyway.
+7. Interception model: Eos (tacnuke) is stopped only by hostile terraform and shields;
+   the strategic nuke (Trinity) only by Funnelweb (soft) and antinukes (hard) — so
+   dismantling antinukes is the priority target for the nuke project.
+8. Morph metal is refunded if the unit dies while morphing (verify in-game) — so no
+   cancel-on-low-HP needed for morphs.
+9. Turret decon: each turret stamps `last_combat` (our `WeaponFired` / nearby
+   `EnemyDamaged`); turrets with no combat for T frames and > M elmos behind the front
+   go on a decon list that idle engineers reclaim.
+10. Operator UI: start-time strategy toggles via AIOptions (free, plus `?opts` in
+    match.sh); live dashboard via a LuaUI widget polling the AI through a LuaMessage
+    round-trip (`ZKTDAI_STATUS` → JSON reply) showing projects, taskgroups, budget
+    shares, enemy evaluation; websocket remote operator later (pattern:
+    `reference/zkgbai-rs/tools/operator/`).
+
+## war_chest ledger (detailed design)
+
+One module, `crates/zktdai/src/war_chest.rs`, owns all spending decisions for metal and
+energy. No other module reads `economy.current` to decide spending; they ask the ledger.
+
+State: `reserve_metal` (floor — never spend below `current − reserve`; starts at ~10% of
+starting capacity ≈ 50 and grows with the economy, e.g. `clamp(0.1 × storage, 50, …)`),
+`reserve_energy` (for nuke/overdrive bursts), `porc_cap_pct` (porc may spend at most
+this × income per window), `stockpile_target` (1500 + 300 headroom), and
+`projects: Vec<Project>` where `Project { name, kind, state: Queued|Active|Done|Failed,
+budget_bump, reserved, target_unit, started_frame }`.
+
+API: `update(ctx)` every ~30 frames (reads current/income/usage/storage for both
+resources, ages projects, releases reservations on completion); `can_spend(kind, amount)`
+= `current − reserve − Σ reserved ≥ amount` and per-kind cap check; `request_project(…)`
+reserves the cost and activates when a builder starts (`UnitCreated` with builder);
+priority when metal is scarce: survival porc > army floor > stockpile top-up > active
+project (with its `budget_bump`) > queued projects in profile order (nuke after 2–3
+frontline heavies). Events: `UnitFinished` of the target → Done, `UnitDestroyed` →
+Failed (release reservation), `CommandFinished` → Done. Every 30 s log
+`[war_chest] current=… income=… reserve=… projects=[…]` and expose `status_json()` for
+the operator widget. Strategy profile picked at Init from a seeded RNG, logged.
+
+## Adversarial review — round 3
+
+- Random strategies hurt benchmark comparability → pin via option/logged seed; only
+  randomise in non-benchmark games.
+- The heavy predicate (cost > 1600, non-flying) also catches artillery and some
+  supports — fine, but Widow-shock offense needs a spider factory commitment; make it
+  a profile choice, not always-on.
+- Ring pits around mexes: never dig under the extractor itself; overdrive needs the
+  grid module first.
+- Decon list needs breach stamps per turret (WeaponFired/EnemyDamaged proximity);
+  reclaim only for metal/space.
+- Widget: LuaMessage round-trip is enough for v1; websocket operator later.
