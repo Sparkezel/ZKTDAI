@@ -173,7 +173,7 @@ impl SkirmishAi for Zktdai {
                     self.ordered_spots.retain(|i| !owned[*i]);
                 }
                 if frame % 150 == 0 {
-                    self.porc.update(&self.ctx, &self.roles, &self.terr);
+                    self.porc.update(&self.ctx, &self.roles, &mut self.terr, &mut self.war);
                 }
                 if frame % 120 == 0 {
                     self.sab.update(&self.ctx, &self.roles, &self.terr);
@@ -200,7 +200,11 @@ impl SkirmishAi for Zktdai {
                 self.roles.remove(&unit.id());
             }
             Event::EnemyDestroyed { enemy, .. } => self.sab.forget(enemy.id()),
-            Event::UnitDamaged { unit, .. } => self.maybe_retreat(unit),
+            Event::WeaponFired { unit, .. } => self.porc.note_combat(&self.ctx, unit, self.ctx.frame),
+            Event::UnitDamaged { unit, .. } => {
+                self.porc.note_damage(&self.ctx, unit.pos(), self.ctx.frame);
+                self.maybe_retreat(unit);
+            }
             Event::Release { reason } => self.ctx.cb.log(&format!("[zktdai] release reason={reason}")),
             _ => {}
         }
