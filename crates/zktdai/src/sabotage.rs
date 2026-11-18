@@ -71,8 +71,10 @@ impl Sabotage {
             if self.dispatched.get(&e.id()).is_some_and(|&f| ctx.frame - f < REDISPATCH_FRAMES) {
                 continue;
             }
-            if best.as_ref().is_none_or(|(_, v)| value > *v) {
-                best = Some((*e, value));
+            // prefer deeper targets (into enemy territory) — antinukes, heavies
+            let depth_bonus = e.pos().distance_2d(ctx.our_start) * 0.02;
+            if best.as_ref().is_none_or(|(_, v)| value + depth_bonus > *v) {
+                best = Some((*e, value + depth_bonus));
             }
         }
         let Some((target, value)) = best else { return };

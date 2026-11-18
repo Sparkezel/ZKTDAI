@@ -200,6 +200,9 @@ impl SkirmishAi for Zktdai {
                 self.roles.remove(&unit.id());
             }
             Event::EnemyDestroyed { enemy, .. } => self.sab.forget(enemy.id()),
+            Event::EnemyEnterLos { enemy } | Event::EnemyCreated { enemy } | Event::EnemyFinished { enemy } => {
+                self.army.note_enemy(&self.ctx, enemy);
+            }
             Event::WeaponFired { unit, .. } => self.porc.note_combat(&self.ctx, unit, self.ctx.frame),
             Event::UnitDamaged { unit, .. } => {
                 self.porc.note_damage(&self.ctx, unit.pos(), self.ctx.frame);
@@ -220,6 +223,7 @@ impl Zktdai {
         if let Some(def) = unit.def() {
             let role = self.ctx.defs.role(def);
             self.roles.insert(unit.id(), role);
+            self.army.on_our_unit(&self.ctx, unit, role);
         }
     }
 
@@ -231,8 +235,8 @@ impl Zktdai {
             }
             Role::Worker => self.eco.worker_idle(&self.ctx, unit, &mut self.ordered_spots, &mut self.terr, &self.war),
             Role::Factory => self.army.factory_idle(&self.ctx, unit, &self.war),
-            r if r.is_combat() => {
-                let push = self.army.push_ready(&self.ctx, &self.roles);
+            r if r.is_combat() || r == Role::Scout => {
+                let push = self.army.push_ready(&self.ctx, &self.roles) || self.army.all_in(&self.ctx);
                 self.army.combat_idle(&self.ctx, unit, r, &self.terr, push);
             }
             _ => {}
