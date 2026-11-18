@@ -51,13 +51,13 @@ impl Porc {
                 }
             }
         }
-        if ctx.frame >= self.next_aa && ctx.defs.aa.is_some() {
+        if ctx.frame >= self.next_aa && ctx.defs.aa_ladder.first().is_some() {
             let enemy_air = cb
                 .enemy_units_in_radar_and_los()
                 .iter()
                 .any(|e| e.def().is_some_and(|d| d.is_able_to_fly()));
             if enemy_air {
-                let aa = ctx.defs.aa.unwrap();
+                let aa = ctx.defs.aa_ladder[0];
                 if cb.economy().current(metal) >= aa.cost(metal) * 1.5 {
                     if let Some(builder) = idle_worker_near(ctx, roles, ctx.our_start, 800.0) {
                         build_at(cb, builder, aa, ctx.our_start, 300.0);
