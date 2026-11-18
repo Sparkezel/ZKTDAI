@@ -1,0 +1,9 @@
+target/
+dist/
+dist-rs/
+# Local reference copy of the upstream AI this project derives from
+# (see README: refresh with `git clone https://github.com/Anarchid/zkgbai-rs reference/zkgbai-rs`).
+/reference/
+/.toolchains
+__pycache__/
+*.pyc

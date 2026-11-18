@@ -1,0 +1,208 @@
+//! The AI root: owns all state and dispatches engine events to the modules.
+
+use std::collections::{HashMap, HashSet};
+
+use springai::{Callback, Event, Resource, SkirmishAi, Unit, Vec3, opt};
+
+use crate::army::Army;
+use crate::defs::{Defs, Role};
+use crate::economy;
+use crate::porc::Porc;
+use crate::sabotage::Sabotage;
+use crate::territory::Territory;
+
+/// Start-script options (declared in `data/AIOptions.lua`).
+pub struct Opts {
+    /// Percent of the map's metal spots to hold before turning offensive.
+    pub territory_share: f32,
+    /// Combat units gathered before an all-in push.
+    pub push_size: i32,
+    pub raiding: bool,
+    pub porc: bool,
+    pub sabotage: bool,
+}
+
+/// Shared per-frame game view the modules read.
+pub struct Ctx {
+    pub cb: Callback,
+    pub defs: Defs,
+    pub metal: Option<Resource>,
+    pub energy: Option<Resource>,
+    pub frame: i32,
+    /// Metal spot positions, in elmos.
+    pub spots: Vec<Vec3>,
+    pub our_start: Vec3,
+    /// Estimated enemy base (our start mirrored across the map centre).
+    pub enemy_target: Vec3,
+    pub opts: Opts,
+}
+
+pub struct Zktdai {
+    ctx: Ctx,
+    /// Our live units by engine id -> role.
+    roles: HashMap<i32, Role>,
+    /// Metal spots a mex order was already issued for.
+    ordered_spots: HashSet<usize>,
+    start_sent: bool,
+    terr: Territory,
+    porc: Porc,
+    sab: Sabotage,
+    army: Army,
+}
+
+fn bool_opt(cb: Callback, key: &str, default: bool) -> bool {
+    cb.option(key).map(|v| matches!(v.as_str(), "true" | "1" | "yes" | "on")).unwrap_or(default)
+}
+
+impl SkirmishAi for Zktdai {
+    fn new(cb: Callback) -> Self {
+        let defs = Defs::new(cb);
+        let metal = cb.resource_by_name("Metal");
+        let energy = cb.resource_by_name("Energy");
+        let opts = Opts {
+            territory_share: cb.option("territory_share").and_then(|v| v.parse().ok()).unwrap_or(50.0),
+            push_size: cb.option("push_size").and_then(|v| v.parse().ok()).unwrap_or(12),
+            raiding: bool_opt(cb, "raiding", true),
+            porc: bool_opt(cb, "porc", true),
+            sabotage: bool_opt(cb, "sabotage", true),
+        };
+        let map = cb.map();
+        let centre = Vec3::xz(map.width() as f32 * 4.0, map.height() as f32 * 4.0);
+        Zktdai {
+            ctx: Ctx {
+                cb,
+                defs,
+                metal,
+                energy,
+                frame: 0,
+                spots: Vec::new(),
+                our_start: centre,
+                enemy_target: centre,
+                opts,
+            },
+            roles: HashMap::new(),
+            ordered_spots: HashSet::new(),
+            start_sent: false,
+            terr: Territory::new(0, centre, centre),
+            porc: Porc::new(),
+            sab: Sabotage::new(),
+            army: Army::new(),
+        }
+    }
+
+    fn handle_event(&mut self, event: Event) -> i32 {
+        match event {
+            Event::Init { saved_game } => {
+                let cb = self.ctx.cb;
+                let map = cb.map();
+                if let Some(metal) = self.ctx.metal {
+                    self.ctx.spots = map.resource_map_spots(metal);
+                }
+                self.terr = Territory::new(self.ctx.spots.len(), self.ctx.our_start, self.ctx.enemy_target);
+                cb.log(&format!(
+                    "[zktdai] init saved={saved_game} build={} engine={} game={} map='{}' {}x{} spots={} defs={}",
+                    env!("ZKTDAI_BUILD"),
+                    cb.engine_version(),
+                    cb.mod_info().human_name(),
+                    map.name(),
+                    map.width(),
+                    map.height(),
+                    self.ctx.spots.len(),
+                    cb.unit_defs().len(),
+                ));
+            }
+            Event::Update { frame } => {
+                self.ctx.frame = frame;
+                if !self.start_sent {
+                    self.send_start();
+                }
+                if frame % 60 == 0 {
+                    self.terr.update(&self.ctx, &self.roles);
+                    let owned = self.terr.owned.clone();
+                    self.ordered_spots.retain(|i| !owned[*i]);
+                }
+                if frame % 150 == 0 {
+                    self.porc.update(&self.ctx, &self.roles, &self.terr);
+                }
+                if frame % 120 == 0 {
+                    self.sab.update(&self.ctx, &self.roles, &self.terr);
+                }
+                if frame % 300 == 0 {
+                    self.army.update(&self.ctx, &self.roles, &self.terr);
+                }
+            }
+            Event::UnitCreated { unit, .. } | Event::UnitFinished { unit } => self.track(unit),
+            Event::UnitIdle { unit } => self.unit_idle(unit),
+            Event::UnitDestroyed { unit, .. } | Event::UnitGiven { unit, .. } | Event::UnitCaptured { unit, .. } => {
+                self.roles.remove(&unit.id());
+            }
+            Event::EnemyDestroyed { enemy, .. } => self.sab.forget(enemy.id()),
+            Event::UnitDamaged { unit, .. } => self.maybe_retreat(unit),
+            Event::Release { reason } => self.ctx.cb.log(&format!("[zktdai] release reason={reason}")),
+            _ => {}
+        }
+        0
+    }
+}
+
+impl Zktdai {
+    fn track(&mut self, unit: Unit) {
+        if unit.team() != self.ctx.cb.game().my_team() {
+            return;
+        }
+        if let Some(def) = unit.def() {
+            let role = self.ctx.defs.role(def);
+            self.roles.insert(unit.id(), role);
+        }
+    }
+
+    fn unit_idle(&mut self, unit: Unit) {
+        let Some(role) = self.roles.get(&unit.id()).copied() else { return };
+        match role {
+            Role::Commander => economy::commander_idle(&self.ctx, unit, &self.roles, &mut self.ordered_spots, &self.terr),
+            Role::Worker => economy::worker_idle(&self.ctx, unit, &mut self.ordered_spots, &self.terr),
+            Role::Factory => self.army.factory_idle(&self.ctx, unit),
+            r if r.is_combat() => {
+                let push = self.army.push_ready(&self.ctx, &self.roles);
+                self.army.combat_idle(&self.ctx, unit, r, &self.terr, push);
+            }
+            _ => {}
+        }
+    }
+
+    fn maybe_retreat(&mut self, unit: Unit) {
+        if self.roles.get(&unit.id()).is_none_or(|r| !r.is_combat()) {
+            return;
+        }
+        if unit.health() < unit.max_health() * 0.35 {
+            unit.move_to(self.ctx.our_start, opt::NONE);
+        }
+    }
+
+    /// Pick the start position: the metal spot nearest the map centre.
+    fn send_start(&mut self) {
+        let cb = self.ctx.cb;
+        let map = cb.map();
+        let centre = Vec3::xz(map.width() as f32 * 4.0, map.height() as f32 * 4.0);
+        let pos = self
+            .ctx
+            .spots
+            .iter()
+            .min_by(|a, b| {
+                a.distance_2d(centre).partial_cmp(&b.distance_2d(centre)).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .copied()
+            .unwrap_or(centre);
+        let pos = Vec3::new(pos.x, map.elevation_at(pos.x, pos.z), pos.z);
+        if cb.game().send_start_position(true, pos) {
+            self.start_sent = true;
+            self.ctx.our_start = pos;
+            self.ctx.enemy_target = Vec3::xz(map.width() as f32 * 8.0 - pos.x, map.height() as f32 * 8.0 - pos.z);
+            self.terr = Territory::new(self.ctx.spots.len(), pos, self.ctx.enemy_target);
+            cb.log(&format!(
+                "[zktdai] start at ({:.0},{:.0}), enemy estimate ({:.0},{:.0})",
+                pos.x, pos.z, self.ctx.enemy_target.x, self.ctx.enemy_target.z
+            ));
+        }
+    }
+}
