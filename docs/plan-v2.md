@@ -364,3 +364,56 @@ the operator widget. Strategy profile picked at Init from a seeded RNG, logged.
 8. The balanced opening (1 con + 5 raiders) depends on the scout-pool split so raiders
    don't all die scouting; make the opening a scripted sequence with early-exit
    conditions.
+
+## Round 4 highlights (incorporated) + verified unit definitions
+
+1. First fusion (35e) is a big overdrive boost: at 40–50 m/s, pause all other production
+   until it completes, to field it fast and reap overdrive sooner. Second fusion builds
+   slower — army power / extra defense (e.g. 3 Lotuses near the fusion) may come first.
+2. Opening scouts: first 2 raiders scout, the rest raid; even if scouts die, first contact
+   reveals the enemy factory → adjust from it.
+3. Wind decision rule (analysis): expected turbine output = `myMin + w·(windMax−myMin)`;
+   windMax = 2.5·energyMult (unit_windmill_control.lua:243), myMin rises with altitude
+   (0.4·windMax per 400 elmo), strength is re-randomised each period in [windMin, windMax].
+   Energy-per-metal: turbine(0–2.5) = 2.5w/35; turbine(1–2.5) = (1+1.5w)/35;
+   fusion 35/1000 = 0.035; geo 25/500 = 0.05; singu 225/4000 = 0.05625; adv geo 100/1500 = 0.0667.
+   Breakpoints — min-0 turbine beats fusion at w>0.49, geo at w>0.70, singu at w>0.79,
+   adv geo at w>0.93; min-1 (high-ground) turbine beats fusion at w>0.15, geo at w>0.50,
+   singu at w>0.65, adv geo at w>0.89. Rule of thumb "wind mainly at ≥0.6" ≈ beats geo,
+   not yet singu; with high-ground turbines wind wins much earlier. Wind also doubles as
+   mex grid links (overdrive), which e/m math misses. Sub-20% wind dips need static backup
+   (solars). AI reads map wind via `Map_getMinWind/MaxWind/CurWind` (in the FFI bindings;
+   add wrappers in Phase 1).
+4. Overdrive confirmed: multiplier `1 + 0.25·sqrt(excess)` (unit_mex_overdrive.lua:266).
+
+### Verified unitdefs (Zero-K repo, units/*.lua — `name` = human name, key = internal)
+
+| Human | Internal | metal | | Human | Internal | metal |
+|---|---|---|---|---|---|---|
+| Ogre | tankriot | 500 | | Lotus | turretlaser | 90 |
+| Krow | gunshipkrow | 4200 (flies → not heavy) | | Picket | turretmissile | 95 |
+| Ultimatum | striderantiheavy | 2400 | | Stardust | turretriot | 220 |
+| Widow | spiderantiheavy | 280 | | Gauss | turretgauss | 400 |
+| Sparrow | planelightscout | 230 | | Stinger | turretheavylaser | 450 |
+| Gremlin | cloakaa | 120 | | Razor (AA laser) | turretaalaser | 280 |
+| Scythe | cloakheavyraid | 250 | | Chainsaw (AA) | turretaafar | 900 |
+| Swift | planefighter | 150 | | Hacksaw (AA) | turretaaclose | 210 |
+| Glaive (raider) | cloakraid | 65 | | Faraday | turretemp | 260 |
+| Ronin (skirm) | cloakskirm | 90 | | Newton | turretimpulse | 200 |
+| Minotaur (assault) | tankassault | 850 | | Lucifer | turretantiheavy | 2200 |
+| Scorcher (veh raid) | vehraid | 130 | | Desolator | turretheavy | 1500 |
+| Caretaker | staticcon | 180 | | Aegis | staticshield | 525 |
+| Strider Hub | striderhub | — | | Aspis | shieldshield | 700 |
+| Radar Tower | staticradar | 55 | | Artemis (AA) | turretaaheavy | 2400 |
+| Wind turbine | energywind | 35 | | Cerberus (arty) | staticarty | 2500 |
+| Solar | energysolar | 70 | | Eos missile | tacnuke | 600 |
+| Mex | staticmex | 85 | | Missile silo | staticmissilesilo | 1200 |
+| Fusion | energyfusion | 1000 | | Nuke silo | staticnuke | 8000 |
+| Singularity | energysingu | 4000 | | Anti-nuke | staticantinuke | 3000 |
+| Geothermal | energygeo | 500 | | Storage | staticstorage | 100 |
+| Adv geothermal | energyheavygeo | 1500 | | Pylon | energypylon | 200 |
+
+Note: v1's turret ladder internal names were right but labels off (turretgauss is Gauss,
+not Picket); v2 classifies by `human_name()` with internal-name fallback. Heavy
+predicate: `!is_able_to_fly && cost > 1000`; Krow auto-excluded (flies); commanders
+(`dyn*`/`cremcom*`) edge case <4000.
