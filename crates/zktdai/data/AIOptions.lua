@@ -85,6 +85,20 @@ local options = {
 		def    = '',
 		maxlen = 24,
 	},
+	{
+		key    = 'walled_mexes',
+		name   = 'Walled mexes',
+		desc   = 'Terraform 60-elmo enemy-facing arc walls around forward/hot mexes.',
+		type   = 'bool',
+		def    = true,
+	},
+	{
+		key    = 'caretakers',
+		name   = 'Caretakers',
+		desc   = 'Build caretakers near the front, naked only under local superiority.',
+		type   = 'bool',
+		def    = true,
+	},
 }
 
 return options

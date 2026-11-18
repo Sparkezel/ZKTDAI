@@ -7,6 +7,7 @@ use springai::{Callback, Event, Resource, SkirmishAi, Unit, Vec3, opt};
 use crate::army::Army;
 use crate::defs::{Defs, Role};
 use crate::economy::Economy;
+use crate::fortify::Fortify;
 use crate::porc::Porc;
 use crate::sabotage::Sabotage;
 use crate::territory::Territory;
@@ -29,6 +30,8 @@ pub struct Opts {
     pub stockpile_metal: f32,
     /// Strategy profile (option `strategy`; empty = picked by AI slot).
     pub strategy: String,
+    pub walled_mexes: bool,
+    pub caretakers: bool,
 }
 
 /// Shared per-frame game view the modules read.
@@ -60,6 +63,7 @@ pub struct Zktdai {
     start_sent: bool,
     terr: Territory,
     eco: Economy,
+    fort: Fortify,
     porc: Porc,
     sab: Sabotage,
     army: Army,
@@ -91,6 +95,8 @@ impl SkirmishAi for Zktdai {
                     const PROFILES: &[&str] = &["balanced", "econ_greedy", "porc_heavy"];
                     PROFILES[(cb.ai_id().unsigned_abs() as usize) % PROFILES.len()].to_string()
                 }),
+            walled_mexes: bool_opt(cb, "walled_mexes", true),
+            caretakers: bool_opt(cb, "caretakers", true),
         };
         let war = WarChest::new(
             cb,
@@ -123,6 +129,7 @@ impl SkirmishAi for Zktdai {
             start_sent: false,
             terr: Territory::new(0, centre, centre),
             eco: Economy::new(),
+            fort: Fortify::new(),
             porc: Porc::new(),
             sab: Sabotage::new(),
             army: Army::new(),
@@ -178,6 +185,9 @@ impl SkirmishAi for Zktdai {
                 if frame % 120 == 0 {
                     self.sab.update(&self.ctx, &self.roles, &self.terr);
                 }
+                if frame % 900 == 0 {
+                    self.fort.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
+                }
                 if frame % 300 == 0 {
                     self.eco.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
                     self.army.update(&self.ctx, &self.roles, &self.terr);
@@ -208,6 +218,14 @@ impl SkirmishAi for Zktdai {
                 self.porc.note_damage(&self.ctx, unit.pos(), self.ctx.frame);
                 self.maybe_retreat(unit);
             }
+            Event::LuaMessage { data } => {
+                // operator widget poll (issue #14): answer with a JSON status
+                if data.trim() == "ZKTDAI_STATUS" {
+                    let json = self.status_json();
+                    self.ctx.cb.log(&format!("[zktdai] status {}", json));
+                    let _ = self.ctx.cb.call_lua_rules(&format!("ZKTDAI_STATUS_REPLY {}", json));
+                }
+            }
             Event::Release { reason } => self.ctx.cb.log(&format!("[zktdai] release reason={reason}")),
             _ => {}
         }
@@ -216,6 +234,20 @@ impl SkirmishAi for Zktdai {
 }
 
 impl Zktdai {
+    /// Combined status JSON for the operator widget: war chest + army + territory.
+    fn status_json(&self) -> String {
+        let war = self.war.status_json(&self.ctx);
+        format!(
+            "{{\"army\":{{\"units\":{},\"scouts\":{}}},\"territory\":{{\"share\":{:.3},\"front\":[{:.0},{:.0}]}},\"war\":{}}}",
+            self.roles.values().filter(|r| r.is_combat()).count(),
+            self.roles.values().filter(|r| **r == Role::Scout).count(),
+            self.terr.share,
+            self.terr.front.x,
+            self.terr.front.z,
+            &war[1..] // strip outer '{' to nest
+        )
+    }
+
     fn track(&mut self, unit: Unit) {
         if unit.team() != self.ctx.cb.game().my_team() {
             return;
