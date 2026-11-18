@@ -465,6 +465,21 @@ impl Map {
         ffi!(self.cb, Map_getExtractorRadius, res.id())
     }
 
+    /// Map wind bounds, in elmos of wind: turbines output between these
+    /// (Zero-K caps max wind at 2.5); the per-spot minimum rises with altitude.
+    pub fn wind_min(&self) -> f32 {
+        ffi!(self.cb, Map_getMinWind)
+    }
+
+    pub fn wind_max(&self) -> f32 {
+        ffi!(self.cb, Map_getMaxWind)
+    }
+
+    /// Current wind strength.
+    pub fn wind_cur(&self) -> f32 {
+        ffi!(self.cb, Map_getCurWind)
+    }
+
     /// Draw a labelled marker point (visible to allies).
     pub fn add_point(&self, pos: Vec3, label: &str) -> bool {
         let mut p = pos.to_array();

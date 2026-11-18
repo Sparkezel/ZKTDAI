@@ -9,6 +9,7 @@ use springai::{Unit, UnitDef, opt};
 use crate::ai::Ctx;
 use crate::defs::Role;
 use crate::territory::Territory;
+use crate::war_chest::{ProjectKind, ProjectState, WarChest};
 
 pub struct Army {
     cycle: usize,
@@ -23,8 +24,16 @@ impl Army {
         roles.values().filter(|r| r.is_combat()).count() as i32 >= ctx.opts.push_size
     }
 
-    /// A factory that just went idle builds the next unit of the mix.
-    pub fn factory_idle(&mut self, ctx: &Ctx, factory: Unit) {
+    /// A factory that just went idle builds the next unit of the mix — unless
+    /// a big energy project (first fusion) is active and production is paused.
+    pub fn factory_idle(&mut self, ctx: &Ctx, factory: Unit, war: &WarChest) {
+        if war
+            .projects
+            .iter()
+            .any(|p| p.state == ProjectState::Active && p.kind == ProjectKind::Energy)
+        {
+            return;
+        }
         let cb = ctx.cb;
         let Some(metal) = ctx.metal else { return };
         let Some(def) = self.next_unit(ctx) else { return };

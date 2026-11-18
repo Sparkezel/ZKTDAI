@@ -23,6 +23,8 @@ pub struct Territory {
     pub share: f32,
     /// Enemy-held spots, for raider targets.
     pub enemy_spots: Vec<Vec3>,
+    /// Frame of the last creep-claim above the territory target.
+    pub last_creep: i32,
 }
 
 impl Territory {
@@ -35,6 +37,7 @@ impl Territory {
             front: Vec3::xz((our_start.x + enemy_target.x) / 2.0, (our_start.z + enemy_target.z) / 2.0),
             share: 0.0,
             enemy_spots: Vec::new(),
+            last_creep: 0,
         }
     }
 
@@ -98,21 +101,46 @@ impl Territory {
             .collect();
     }
 
-    /// The nearest unheld spot, for the next mex — or `None` once we hold our
-    /// target share of the map.
-    pub fn expansion_spot(&self, ctx: &Ctx, ordered: &HashSet<usize>) -> Option<usize> {
-        if self.share * 100.0 >= ctx.opts.territory_share {
+    /// The next spot to claim. Below the territory target: the nearest free
+    /// spot, aggressively. Above it: a slow creep — only cheap-to-hold spots
+    /// (near our centroid, far from the enemy's), rate-limited to one per 30 s.
+    pub fn expansion_spot(&mut self, ctx: &Ctx, ordered: &HashSet<usize>) -> Option<usize> {
+        let free = |spots: &mut dyn Iterator<Item = (usize, &Vec3)>| {
+            spots
+                .filter(|(i, _)| !self.owned[*i] && !self.enemy[*i] && !ordered.contains(i))
+                .min_by(|(_, a), (_, b)| {
+                    a.distance_2d(self.our_centroid)
+                        .partial_cmp(&b.distance_2d(self.our_centroid))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(i, _)| i)
+        };
+        if self.share * 100.0 < ctx.opts.territory_share {
+            return free(&mut ctx.spots.iter().enumerate());
+        }
+        if ctx.frame - self.last_creep < 1800 {
             return None;
         }
-        ctx.spots
+        let cand = ctx
+            .spots
             .iter()
             .enumerate()
-            .filter(|(i, _)| !self.owned[*i] && !self.enemy[*i] && !ordered.contains(i))
+            .filter(|(i, s)| {
+                !self.owned[*i]
+                    && !self.enemy[*i]
+                    && !ordered.contains(i)
+                    && s.distance_2d(self.our_centroid) < 1500.0
+                    && s.distance_2d(self.enemy_centroid) > 2000.0
+            })
             .min_by(|(_, a), (_, b)| {
                 a.distance_2d(self.our_centroid)
                     .partial_cmp(&b.distance_2d(self.our_centroid))
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|(i, _)| i)
+            .map(|(i, _)| i);
+        if cand.is_some() {
+            self.last_creep = ctx.frame;
+        }
+        cand
     }
 }

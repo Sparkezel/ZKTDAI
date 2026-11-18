@@ -6,7 +6,7 @@ use springai::{Callback, Event, Resource, SkirmishAi, Unit, Vec3, opt};
 
 use crate::army::Army;
 use crate::defs::{Defs, Role};
-use crate::economy;
+use crate::economy::Economy;
 use crate::porc::Porc;
 use crate::sabotage::Sabotage;
 use crate::territory::Territory;
@@ -43,6 +43,11 @@ pub struct Ctx {
     pub our_start: Vec3,
     /// Estimated enemy base (our start mirrored across the map centre).
     pub enemy_target: Vec3,
+    /// Map wind bounds (elmos of wind; Zero-K caps max at 2.5).
+    pub wind_min: f32,
+    pub wind_max: f32,
+    /// Geothermal feature positions.
+    pub geo_spots: Vec<Vec3>,
     pub opts: Opts,
 }
 
@@ -54,6 +59,7 @@ pub struct Zktdai {
     ordered_spots: HashSet<usize>,
     start_sent: bool,
     terr: Territory,
+    eco: Economy,
     porc: Porc,
     sab: Sabotage,
     army: Army,
@@ -107,12 +113,16 @@ impl SkirmishAi for Zktdai {
                 spots: Vec::new(),
                 our_start: centre,
                 enemy_target: centre,
+                wind_min: 0.0,
+                wind_max: 0.0,
+                geo_spots: Vec::new(),
                 opts,
             },
             roles: HashMap::new(),
             ordered_spots: HashSet::new(),
             start_sent: false,
             terr: Territory::new(0, centre, centre),
+            eco: Economy::new(),
             porc: Porc::new(),
             sab: Sabotage::new(),
             army: Army::new(),
@@ -128,6 +138,14 @@ impl SkirmishAi for Zktdai {
                 if let Some(metal) = self.ctx.metal {
                     self.ctx.spots = map.resource_map_spots(metal);
                 }
+                self.ctx.wind_min = map.wind_min();
+                self.ctx.wind_max = map.wind_max();
+                self.ctx.geo_spots = cb
+                    .features()
+                    .iter()
+                    .filter(|f| f.def().is_some_and(|d| d.name().to_lowercase().contains("geo")))
+                    .map(|f| f.pos())
+                    .collect();
                 self.terr = Territory::new(self.ctx.spots.len(), self.ctx.our_start, self.ctx.enemy_target);
                 cb.log(&format!(
                     "[zktdai] init saved={saved_game} build={} engine={} game={} map='{}' {}x{} spots={} defs={}",
@@ -161,6 +179,7 @@ impl SkirmishAi for Zktdai {
                     self.sab.update(&self.ctx, &self.roles, &self.terr);
                 }
                 if frame % 300 == 0 {
+                    self.eco.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
                     self.army.update(&self.ctx, &self.roles, &self.terr);
                 }
             }
@@ -203,9 +222,11 @@ impl Zktdai {
     fn unit_idle(&mut self, unit: Unit) {
         let Some(role) = self.roles.get(&unit.id()).copied() else { return };
         match role {
-            Role::Commander => economy::commander_idle(&self.ctx, unit, &self.roles, &mut self.ordered_spots, &self.terr),
-            Role::Worker => economy::worker_idle(&self.ctx, unit, &mut self.ordered_spots, &self.terr),
-            Role::Factory => self.army.factory_idle(&self.ctx, unit),
+            Role::Commander => {
+                self.eco.commander_idle(&self.ctx, unit, &self.roles, &mut self.ordered_spots, &mut self.terr, &self.war)
+            }
+            Role::Worker => self.eco.worker_idle(&self.ctx, unit, &mut self.ordered_spots, &mut self.terr, &self.war),
+            Role::Factory => self.army.factory_idle(&self.ctx, unit, &self.war),
             r if r.is_combat() => {
                 let push = self.army.push_ready(&self.ctx, &self.roles);
                 self.army.combat_idle(&self.ctx, unit, r, &self.terr, push);
