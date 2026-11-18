@@ -10,6 +10,7 @@ use crate::economy;
 use crate::porc::Porc;
 use crate::sabotage::Sabotage;
 use crate::territory::Territory;
+use crate::war_chest::{WarChest, WarChestOpts};
 
 /// Start-script options (declared in `data/AIOptions.lua`).
 pub struct Opts {
@@ -20,6 +21,14 @@ pub struct Opts {
     pub raiding: bool,
     pub porc: bool,
     pub sabotage: bool,
+    /// Porc may spend at most this fraction of metal income per window.
+    pub porc_budget_pct: f32,
+    /// Metal reserve floor at game start (grows with storage afterwards).
+    pub reserve_metal: f32,
+    /// Desired metal stockpile (1500 + 300 headroom by default).
+    pub stockpile_metal: f32,
+    /// Strategy profile (option `strategy`; empty = picked by AI slot).
+    pub strategy: String,
 }
 
 /// Shared per-frame game view the modules read.
@@ -48,6 +57,7 @@ pub struct Zktdai {
     porc: Porc,
     sab: Sabotage,
     army: Army,
+    war: WarChest,
 }
 
 fn bool_opt(cb: Callback, key: &str, default: bool) -> bool {
@@ -65,7 +75,26 @@ impl SkirmishAi for Zktdai {
             raiding: bool_opt(cb, "raiding", true),
             porc: bool_opt(cb, "porc", true),
             sabotage: bool_opt(cb, "sabotage", true),
+            porc_budget_pct: cb.option("porc_budget_pct").and_then(|v| v.parse().ok()).unwrap_or(20.0) / 100.0,
+            reserve_metal: cb.option("reserve_metal").and_then(|v| v.parse().ok()).unwrap_or(50.0),
+            stockpile_metal: cb.option("stockpile_metal").and_then(|v| v.parse().ok()).unwrap_or(1800.0),
+            strategy: cb
+                .option("strategy")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    const PROFILES: &[&str] = &["balanced", "econ_greedy", "porc_heavy"];
+                    PROFILES[(cb.ai_id().unsigned_abs() as usize) % PROFILES.len()].to_string()
+                }),
         };
+        let war = WarChest::new(
+            cb,
+            WarChestOpts {
+                porc_cap_pct: opts.porc_budget_pct,
+                stockpile_target: opts.stockpile_metal,
+                reserve_metal_start: opts.reserve_metal,
+                strategy: opts.strategy.clone(),
+            },
+        );
         let map = cb.map();
         let centre = Vec3::xz(map.width() as f32 * 4.0, map.height() as f32 * 4.0);
         Zktdai {
@@ -87,6 +116,7 @@ impl SkirmishAi for Zktdai {
             porc: Porc::new(),
             sab: Sabotage::new(),
             army: Army::new(),
+            war,
         }
     }
 
@@ -116,6 +146,9 @@ impl SkirmishAi for Zktdai {
                 if !self.start_sent {
                     self.send_start();
                 }
+                if frame % 30 == 0 {
+                    self.war.update(&self.ctx);
+                }
                 if frame % 60 == 0 {
                     self.terr.update(&self.ctx, &self.roles);
                     let owned = self.terr.owned.clone();
@@ -131,9 +164,20 @@ impl SkirmishAi for Zktdai {
                     self.army.update(&self.ctx, &self.roles, &self.terr);
                 }
             }
-            Event::UnitCreated { unit, .. } | Event::UnitFinished { unit } => self.track(unit),
+            Event::UnitCreated { unit, builder } => {
+                self.war.on_unit_created(&self.ctx, unit, builder);
+                self.track(unit);
+            }
+            Event::UnitFinished { unit } => {
+                self.war.on_unit_finished(&self.ctx, unit);
+                self.track(unit);
+            }
             Event::UnitIdle { unit } => self.unit_idle(unit),
-            Event::UnitDestroyed { unit, .. } | Event::UnitGiven { unit, .. } | Event::UnitCaptured { unit, .. } => {
+            Event::UnitDestroyed { unit, .. } => {
+                self.war.on_unit_destroyed(&self.ctx, unit);
+                self.roles.remove(&unit.id());
+            }
+            Event::UnitGiven { unit, .. } | Event::UnitCaptured { unit, .. } => {
                 self.roles.remove(&unit.id());
             }
             Event::EnemyDestroyed { enemy, .. } => self.sab.forget(enemy.id()),
