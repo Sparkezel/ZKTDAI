@@ -136,3 +136,81 @@ since bigger maps scale faster): opening ~6, mid ~40, endgame ~80 on small maps.
 10. **Benchmark noise.** Small samples lie. Mitigation: fixed map pool, sides
     swapped, ≥2 games per map per phase, and compare medians not single runs; keep
     v1 branch as the control.
+
+## Round 1 refinements (from review discussion — incorporated)
+
+1. Porc budget: minimal at start — hold ~10% of the starting metal capacity (≈50 of
+   500) in reserve; expand the reserve as the economy grows. Note this is two axes:
+   a spend cap (porc ≤ X% of income) and a floor (never spend below the reserve).
+2. Thresholds are flexible, not fixed: e.g. enemy heavy spotted → queue a Lucifer
+   already at ~40 m/s; the porc budget rises while the job is in progress and drops
+   back when it completes (or is cancelled — release the budget on
+   `CommandFinished`/`UnitDestroyed` of the build).
+3. Initial raiders double as scouts: locate the enemy, detect the opener, make quick
+   counters (commander-level units, not a factory swap), adjust to early enemy comp.
+   Role split needed so scouts don't consume the whole raider pool.
+4. Chokepoint-dependent rules stay dormant until the terrain model lands.
+5. Terraform is cheap for small pads (raising a Desolator to a 160-elmo spire ≈ 12%
+   of its cost) — worth doing. Large jobs split into sub-jobs and workers divide
+   between them; mitigate with frontline caretakers. A naked caretaker is only placed
+   under local superiority (QRF close / army on the front / no enemy on radar+LOS);
+   in contested areas, caretakers go into 40-elmo pits or behind walls. Experiment
+   (randomised A/B via an AIOptions toggle): tall front wall vs moderate ~40-elmo
+   surround wall.
+6. The 1500+300 stockpile exists to quick-print counters and silos; treat the silo
+   project as a smaller work item from ~50 m/s, full commitment at 60–80 m/s, gated on
+   "current army power is sufficient" (define: army metal ≥ k × seen enemy army, or a
+   skirm count floor).
+7. Reclaim backline defenses that have not seen a breach in a while. Endgame: lotuses
+   barely matter vs artillery, so priority shifts to an impenetrable heavy perimeter
+   plus point defenses near critical structures (factories, singularity, adv geo,
+   superweapons). Reclaim only when the metal or the build site is actually needed —
+   kept turrets have no upkeep.
+8. Morph edge case: if a unit is below ~35% HP when a morph would finish, cancel the
+   morph unless the game refunds (TEST in-game — refund behaviour on morph cancel is
+   unverified). Terraform: the gadget's restore command can be used around Aspis;
+   buildings can't be raised once construction starts, but units can be moved, so
+   terraforming a placed building's footprint is fine.
+9. Endgame scouting lives in the sabotage subroutine: skittish raiders (avoid damage,
+   hit unprotected eco, prefer deep structures — antinukes, heavies) + more factories
+   for scouting options; plus a ~10-Swift sweep: line across the map, sweep toward the
+   enemy base, boost on damage or when entering AA range (chainsaw/hacksaw-class).
+   Nuke project at ~80 m/s: allocate 30–50 m/s to a nuclear silo; once built, scout
+   for antinukes; if present, site the silo favorably and send tacnukes at them, or
+   infiltrate with a Widow to disable them. Execute only when the nuke can be launched
+   or ≥2 missiles are stocked. NOTE: nukes cost energy too — the reserve ledger must
+   track energy, not only metal.
+10. Benchmark methodology agreed (fixed pool, swapped sides, ≥2 games/map, v1 as control).
+
+## Adversarial review — round 2
+
+1. **Four metal sinks, no arbiter.** Reserve floor, porc spend cap, 1500+300 stockpile,
+   and the 30–50 m/s nuke allocation are separate budgets that will overdraw the same
+   metal. Fix: one `war_chest` ledger module owning current/income/reservations with a
+   single priority order (survival porc > army floor > stockpile > counters/silo).
+2. **"Enemy heavy spotted" needs a definition.** Encode as a def predicate
+   (human_name in {Ogre, Juggernaut, …} or max_weapon_range > R and speed < S), with
+   hysteresis and an army floor before the lucifer triggers — one scout shouldn't
+   commit 40 m/s of porc.
+3. **Scout-raiders vs harass-raiders are the same pool** (point 3 vs doctrine): split
+   explicitly (first N raiders scout until the enemy base is found, then join raids),
+   or scouting eats the box-in.
+4. **"Local superiority" for caretakers depends on Phase 1's threatmap/QRF** — define
+   it as army-within-R or no enemy on radar+LOS within R' (fog makes "no enemy in
+   sight" weak). Sequencing: Phase 1 must land before caretaker placement logic.
+5. **Terraform volume expectations differ by shape.** The 12% figure is a small pad;
+   a surround wall is a ring — order(s) of magnitude more volume. Budget the wall
+   experiments separately and A/B them; don't assume pit + surround wall is cheap.
+6. **Swift sweep costs and dies**: 10 swifts is a real investment, boost costs energy,
+   and the line can path into unscouted heavies. Mitigate: spacing = 2× max seen AA
+   range, sweep only when radar shows no heavy AA cluster, treat losses as intel cost.
+7. **Tacnuke vs antinuke is usually intercepted.** Saturation or Widow disable is the
+   reliable counter; also nukes cost energy — energy reserve required (see point 9).
+8. **Morph-cancel refund is unverified** — mark as an in-game test; also make the <35%
+   HP retreat skip morphing units so retreat doesn't silently break the morph.
+9. **Reclaim triggers need precision**: log breach events per defense zone (timestamp
+   of last UnitDamaged near each turret), reclaim only > M elmos behind the front and
+   never with an incursion inbound; reclaim for metal/space only (kept turrets are free).
+10. **Make every experiment an AIOptions toggle** (`porc_budget_pct`, `reserve_metal`,
+    `lucifer_on_heavy`, `caretaker_wall=off|front|surround`, `nuke_project`, …) so
+    `match.sh`/`series.sh` can A/B with `?key=value` and the results stay comparable.
