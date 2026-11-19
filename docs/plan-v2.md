@@ -417,3 +417,44 @@ Note: v1's turret ladder internal names were right but labels off (turretgauss i
 not Picket); v2 classifies by `human_name()` with internal-name fallback. Heavy
 predicate: `!is_able_to_fly && cost > 1000`; Krow auto-excluded (flies); commanders
 (`dyn*`/`cremcom*`) edge case <4000.
+
+## v0.3 goal — archon mode + ally coordination for up to 16v16 (#18)
+
+Tracked in https://github.com/Sparkezel/ZKTDAI/issues/18.
+
+### Engine side (verified in RecoilEngine + Chobby sources)
+
+- `/aicontrol <teamToControl> <aiShortName> [aiVersion] [name] [options...]` — engine
+  command; blocked by default since 2026-06 (`aiControlFlags.fill(true)`,
+  `GameServer.cpp:215`). Host enables per player with **`/aiCtrl <playerName>`**
+  (case-insensitive prefix match) or **`/aiCtrlByNum <num>`** (host-only server
+  commands, `GameServer.cpp:118`, local check at `:1804`). Issuer must be team
+  leader / singleplayer / allied+cheats / no-leader. One AI per team.
+- Engine allows a human player and an AI on the same team (leader check passes),
+  so archon mode = `/aiCtrl <myName>` then `/aicontrol 0 ZKTDAI 0.3.0?archon_mode=true`.
+
+### ZKTDAI side — archon gating (`archon_mode` AIOption)
+
+- Skip `send_start` (the human picks the start position).
+- Only Commander / Worker / Factory units receive orders (economy, mexes, energy,
+  storages, porc under a reduced budget); no combat or sabotage orders are issued.
+- Human keeps army micro; AI feeds the eco. Status JSON (`ZKTDAI_STATUS`) reports
+  what the AI is doing so the player can see projects/budget.
+
+### Ally coordination (16v16, up to 16 AI instances in one process)
+
+- Shared vision is on in team games, so each instance already sees the whole team's
+  sight; no extra work needed for intel.
+- Intent broadcast: instances send `LuaMessage` ("ZKTDAI_INTENT" / status) so ally
+  ZKTDAI instances can read teammates' current projects.
+- `war_chest` project dedup by team: energy/silo/nuke/storage projects are claimed
+  team-wide via the intent channel so two instances don't both build a fusion.
+- Per-instance CPU budget: stagger update cadence by slot index so 16 instances in
+  one library don't spike one frame.
+
+### Acceptance
+
+- Headless `match.sh -L 2v2` with two ZKTDAI instances on one team (no crash,
+  projects deduped).
+- Local lobby: `/aiCtrl <player>` + `/aicontrol 0 ZKTDAI 0.3.0?archon_mode=true` —
+  AI runs eco while player micros army.
