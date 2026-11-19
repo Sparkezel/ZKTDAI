@@ -249,7 +249,7 @@ impl Porc {
         let mut doomed = Vec::new();
         for u in cb.team_units() {
             let Some(d) = u.def() else { continue };
-            if !(!d.is_able_to_move() && d.is_able_to_attack()) {
+            if d.is_able_to_move() || !d.is_able_to_attack() {
                 continue;
             }
             let quiet = ctx.frame - self.last_combat.get(&u.id()).copied().unwrap_or(0) > DECON_QUIET_FRAMES;
