@@ -99,7 +99,8 @@ jobs:
 
   release:
     if: github.ref_type == 'tag'
-    needs: [lint, test, package]
+    # lint stays a PR gate; a fmt flake on a tag must not silently skip the release
+    needs: [test, package]
     runs-on: ubuntu-latest
     permissions:
       contents: write
