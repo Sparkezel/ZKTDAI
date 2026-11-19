@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use springai::{Callback, Resource, UnitDef};
 
 /// Engine/LuaRules command ids the typed API does not cover.
+// PRIORITY/MORPH are for the engineer-taskgroup (#11) and morph-chain (#15) issues.
+#[allow(dead_code)]
 pub mod cmd {
     /// Zero-K's terraform gadget internal command (LuaRules `unit_terraform.lua`).
     pub const TERRAFORM_INTERNAL: i32 = 39801;
@@ -54,9 +56,9 @@ pub const COMMANDER_HEAVY_EXEMPT_COST: f32 = 4000.0;
 
 const SCOUTS: &[&str] = &[
     "planelightscout", // Sparrow
-    "cloakaa",          // Gremlin
-    "cloakheavyraid",   // Scythe
-    "spiderantiheavy",  // Widow
+    "cloakaa",         // Gremlin
+    "cloakheavyraid",  // Scythe
+    "spiderantiheavy", // Widow
     "spiderscout",
     "vehscout",
     "shieldscout",
@@ -64,35 +66,79 @@ const SCOUTS: &[&str] = &[
     "shipscout",
 ];
 const RAIDERS: &[&str] = &[
-    "cloakraid", "shieldraid", "vehraid", "hoverraid", "jumpraid", "amphraid", "gunshipraid",
-    "cloakheavyraid", "tankheavyraid", "subraider",
+    "cloakraid",
+    "shieldraid",
+    "vehraid",
+    "hoverraid",
+    "jumpraid",
+    "amphraid",
+    "gunshipraid",
+    "cloakheavyraid",
+    "tankheavyraid",
+    "subraider",
 ];
 const SKIRMS: &[&str] = &[
-    "cloakskirm", "cloakriot", "vehriot", "hoverriot", "hoverskirm", "shieldskirm", "amphriot",
-    "spiderskirm", "spiderriot", "gunshipskirm",
+    "cloakskirm",
+    "cloakriot",
+    "vehriot",
+    "hoverriot",
+    "hoverskirm",
+    "shieldskirm",
+    "amphriot",
+    "spiderskirm",
+    "spiderriot",
+    "gunshipskirm",
 ];
 const ASSAULTS: &[&str] = &[
-    "tankassault", "tankriot", // Minotaur, Ogre
-    "cloakassault", "vehassault", "hoverassault", "amphassault", "shieldassault", "tankheavyassault",
-    "jumpsumo", "jumparty", "spiderassault",
+    "tankassault",
+    "tankriot", // Minotaur, Ogre
+    "cloakassault",
+    "vehassault",
+    "hoverassault",
+    "amphassault",
+    "shieldassault",
+    "tankheavyassault",
+    "jumpsumo",
+    "jumparty",
+    "spiderassault",
 ];
 const CON_NAMES: &[&str] = &[
-    "cloakcon", "armcon", "corcon", "jumpcon", "amphcon", "hovercon", "shipcon", "shieldcon",
-    "vehcon", "tankcon", "spidercon", "gunshipcon", "planecon",
+    "cloakcon",
+    "armcon",
+    "corcon",
+    "jumpcon",
+    "amphcon",
+    "hovercon",
+    "shipcon",
+    "shieldcon",
+    "vehcon",
+    "tankcon",
+    "spidercon",
+    "gunshipcon",
+    "planecon",
 ];
 const FACTORY_NAMES: &[&str] = &[
-    "factorycloak", "factoryveh", "factoryjump", "factoryshield", "factoryhover", "factoryamph",
-    "factoryspider", "factoryplane", "factorygunship",
+    "factorycloak",
+    "factoryveh",
+    "factoryjump",
+    "factoryshield",
+    "factoryhover",
+    "factoryamph",
+    "factoryspider",
+    "factoryplane",
+    "factorygunship",
 ];
 /// Porc ladder by metal cost: Lotus 90, Stardust 220, Gauss 400, Stinger 450,
 /// Desolator 1500, Lucifer 2200 (verified against the Zero-K repo).
-const TURRET_LADDER: &[&str] = &[
-    "turretlaser", "turretriot", "turretgauss", "turretheavylaser", "turretheavy", "turretantiheavy",
-];
+const TURRET_LADDER: &[&str] =
+    &["turretlaser", "turretriot", "turretgauss", "turretheavylaser", "turretheavy", "turretantiheavy"];
 /// AA ladder: Razor 280, Hacksaw 210, Chainsaw 900, Artemis 2400.
 const AA_LADDER: &[&str] = &["turretaalaser", "turretaaclose", "turretaafar", "turretaaheavy"];
 
 /// Unit definitions indexed by internal and human name, plus the picks.
+// Some picks (singu, adv_geo, pylon, aegis, aspis, silo, nuke_silo, antinuke,
+// funnelweb, radar) are for the open phase-3/4 issues (#15, #16).
+#[allow(dead_code)]
 pub struct Defs {
     by_name: HashMap<String, UnitDef>,
     by_human: HashMap<String, UnitDef>,
@@ -139,9 +185,10 @@ impl Defs {
         }
         let get = |n: &str| by_name.get(n).copied();
         let mex = get("staticmex").or_else(|| {
-            by_name.values().copied().find(|d| {
-                !d.is_able_to_move() && metal.is_some_and(|m| d.extracts_resource(m) > 0.0)
-            })
+            by_name
+                .values()
+                .copied()
+                .find(|d| !d.is_able_to_move() && metal.is_some_and(|m| d.extracts_resource(m) > 0.0))
         });
         let con = CON_NAMES
             .iter()
@@ -157,11 +204,8 @@ impl Defs {
                         cost(*a).partial_cmp(&cost(*b)).unwrap_or(std::cmp::Ordering::Equal)
                     })
             });
-        let factory = FACTORY_NAMES
-            .iter()
-            .find_map(|n| get(n))
-            .filter(|d| !d.build_options().is_empty())
-            .or_else(|| {
+        let factory =
+            FACTORY_NAMES.iter().find_map(|n| get(n)).filter(|d| !d.build_options().is_empty()).or_else(|| {
                 by_name.values().copied().find(|d| d.name().starts_with("factory") && !d.build_options().is_empty())
             });
         let raider = get("cloakraid").or_else(|| get("vehraid")).or_else(|| get("shieldraid"));
@@ -191,7 +235,6 @@ impl Defs {
         let pylon = get("energypylon");
         let radar = get("staticradar");
         let caretaker = get("staticcon");
-        drop(get); // end the by_name borrow before moving it into the struct
         Defs {
             by_name,
             by_human,

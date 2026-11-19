@@ -10,7 +10,7 @@
 //! terraunits decay, so callers should track the tag and re-issue if needed.
 //! `height < 0` digs (pit/trench); `height > 0` raises (wall/spire).
 
-use springai::{Callback, Unit, Vec3, NO_TIMEOUT, opt};
+use springai::{Callback, NO_TIMEOUT, Unit, Vec3, opt};
 
 use crate::defs::cmd;
 

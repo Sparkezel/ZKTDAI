@@ -88,13 +88,10 @@ impl SkirmishAi for Zktdai {
             porc_budget_pct: cb.option("porc_budget_pct").and_then(|v| v.parse().ok()).unwrap_or(20.0) / 100.0,
             reserve_metal: cb.option("reserve_metal").and_then(|v| v.parse().ok()).unwrap_or(50.0),
             stockpile_metal: cb.option("stockpile_metal").and_then(|v| v.parse().ok()).unwrap_or(1800.0),
-            strategy: cb
-                .option("strategy")
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| {
-                    const PROFILES: &[&str] = &["balanced", "econ_greedy", "porc_heavy"];
-                    PROFILES[(cb.ai_id().unsigned_abs() as usize) % PROFILES.len()].to_string()
-                }),
+            strategy: cb.option("strategy").filter(|s| !s.is_empty()).unwrap_or_else(|| {
+                const PROFILES: &[&str] = &["balanced", "econ_greedy", "porc_heavy"];
+                PROFILES[(cb.ai_id().unsigned_abs() as usize) % PROFILES.len()].to_string()
+            }),
             walled_mexes: bool_opt(cb, "walled_mexes", true),
             caretakers: bool_opt(cb, "caretakers", true),
         };
@@ -165,6 +162,13 @@ impl SkirmishAi for Zktdai {
                     self.ctx.spots.len(),
                     cb.unit_defs().len(),
                 ));
+                cb.log(&format!(
+                    "[zktdai] key defs by human name: Lotus={} Stinger={} Lucifer={} Aspis={}",
+                    self.ctx.defs.by_human("Lotus").is_some(),
+                    self.ctx.defs.by_human("Stinger").is_some(),
+                    self.ctx.defs.by_human("Lucifer").is_some(),
+                    self.ctx.defs.by_human("Aspis").is_some(),
+                ));
             }
             Event::Update { frame } => {
                 self.ctx.frame = frame;
@@ -180,7 +184,7 @@ impl SkirmishAi for Zktdai {
                     self.ordered_spots.retain(|i| !owned[*i]);
                 }
                 if frame % 150 == 0 {
-                    self.porc.update(&self.ctx, &self.roles, &mut self.terr, &mut self.war);
+                    self.porc.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
                 }
                 if frame % 120 == 0 {
                     self.sab.update(&self.ctx, &self.roles, &self.terr);
@@ -213,7 +217,7 @@ impl SkirmishAi for Zktdai {
             Event::EnemyEnterLos { enemy } | Event::EnemyCreated { enemy } | Event::EnemyFinished { enemy } => {
                 self.army.note_enemy(&self.ctx, enemy);
             }
-            Event::WeaponFired { unit, .. } => self.porc.note_combat(&self.ctx, unit, self.ctx.frame),
+            Event::WeaponFired { unit, .. } => self.porc.note_combat(unit, self.ctx.frame),
             Event::UnitDamaged { unit, .. } => {
                 self.porc.note_damage(&self.ctx, unit.pos(), self.ctx.frame);
                 self.maybe_retreat(unit);
@@ -262,12 +266,17 @@ impl Zktdai {
     fn unit_idle(&mut self, unit: Unit) {
         let Some(role) = self.roles.get(&unit.id()).copied() else { return };
         match role {
-            Role::Commander => {
-                self.eco.commander_idle(&self.ctx, unit, &self.roles, &mut self.ordered_spots, &mut self.terr, &self.war)
-            }
+            Role::Commander => self.eco.commander_idle(
+                &self.ctx,
+                unit,
+                &self.roles,
+                &mut self.ordered_spots,
+                &mut self.terr,
+                &self.war,
+            ),
             Role::Worker => self.eco.worker_idle(&self.ctx, unit, &mut self.ordered_spots, &mut self.terr, &self.war),
             Role::Factory => self.army.factory_idle(&self.ctx, unit, &self.war),
-            r if r.is_combat() || r == Role::Scout => {
+            r if r.is_combat() || r.is_scout() => {
                 let push = self.army.push_ready(&self.ctx, &self.roles) || self.army.all_in(&self.ctx);
                 self.army.combat_idle(&self.ctx, unit, r, &self.terr, push);
             }

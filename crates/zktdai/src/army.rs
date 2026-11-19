@@ -68,11 +68,7 @@ impl Army {
     /// A factory that just went idle builds the next unit of the mix — unless
     /// a big energy project (first fusion) is active and production is paused.
     pub fn factory_idle(&mut self, ctx: &Ctx, factory: Unit, war: &WarChest) {
-        if war
-            .projects
-            .iter()
-            .any(|p| p.state == ProjectState::Active && p.kind == ProjectKind::Energy)
-        {
+        if war.projects.iter().any(|p| p.state == ProjectState::Active && p.kind == ProjectKind::Energy) {
             return;
         }
         let cb = ctx.cb;
@@ -89,8 +85,7 @@ impl Army {
     /// (box-in; the first 2 scout), then the army shifts to skirm/assault/arty.
     fn next_unit(&mut self, ctx: &Ctx) -> Option<UnitDef> {
         let d = &ctx.defs;
-        let (wr, ws, wa, wt): (i32, i32, i32, i32) =
-            if ctx.frame < 6000 { (70, 25, 0, 5) } else { (25, 30, 25, 20) };
+        let (wr, ws, wa, wt): (i32, i32, i32, i32) = if ctx.frame < 6000 { (70, 25, 0, 5) } else { (25, 30, 25, 20) };
         let total = wr + ws + wa + wt;
         let pick = (self.cycle as i32) % total;
         self.cycle += 1;
@@ -118,9 +113,10 @@ impl Army {
                 unit.move_to(ctx.our_start, opt::NONE);
                 return;
             }
-            let armed = cb.enemy_units().into_iter().filter(|e| {
-                e.def().is_some_and(|d| d.is_able_to_attack()) && e.pos().distance_2d(me) < 600.0
-            });
+            let armed = cb
+                .enemy_units()
+                .into_iter()
+                .filter(|e| e.def().is_some_and(|d| d.is_able_to_attack()) && e.pos().distance_2d(me) < 600.0);
             if armed.clone().next().is_some() {
                 unit.move_to(ctx.our_start, opt::NONE);
                 return;

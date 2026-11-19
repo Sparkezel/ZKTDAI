@@ -13,6 +13,8 @@ use springai::{Resource, Unit, UnitDef};
 
 use crate::ai::Ctx;
 
+// HeavyPorc/Silo/Nuke/Counter are for the open phase-3/4 issues (#15, #16).
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProjectKind {
     Porc,
@@ -77,6 +79,8 @@ pub struct Project {
 /// Frames in one porc spend window.
 const PORC_WINDOW: i32 = 300;
 
+// energy/reserve_energy are for the nuke project (#16).
+#[allow(dead_code)]
 pub struct WarChest {
     metal: Option<Resource>,
     energy: Option<Resource>,
@@ -222,8 +226,7 @@ impl WarChest {
         // Reserve floor: ~10% of storage capacity, at least the starting reserve,
         // never more than the stockpile target.
         let storage = self.storage_metal(ctx);
-        self.reserve_metal =
-            (0.1 * storage).clamp(self.reserve_metal.min(50.0), self.stockpile_target);
+        self.reserve_metal = (0.1 * storage).clamp(self.reserve_metal.min(50.0), self.stockpile_target);
         if ctx.frame - self.porc_window_start >= PORC_WINDOW {
             self.porc_window_start = ctx.frame;
             self.porc_spent = 0.0;
@@ -240,11 +243,7 @@ impl WarChest {
                 self.reserve_metal,
                 self.spendable(ctx),
                 self.strategy,
-                self.projects
-                    .iter()
-                    .map(|p| format!("{}:{}", p.name, p.state.tag()))
-                    .collect::<Vec<_>>()
-                    .join(",")
+                self.projects.iter().map(|p| format!("{}:{}", p.name, p.state.tag())).collect::<Vec<_>>().join(",")
             ));
         }
     }

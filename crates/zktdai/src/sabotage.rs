@@ -59,7 +59,9 @@ impl Sabotage {
                 continue; // statics only
             }
             let name = d.name();
-            let Some(&(_, value)) = VALUE_HINTS.iter().find(|(hint, _)| name.contains(*hint)) else { continue };
+            let Some(&(_, hint_value)) = VALUE_HINTS.iter().find(|(hint, _)| name.contains(*hint)) else { continue };
+            // heavies (non-flying, cost > 1000; commanders < 4000 exempt) are worth a strike too
+            let value = hint_value.max(if ctx.defs.is_heavy(d) { 90.0 } else { 0.0 });
             let defended = enemies.iter().any(|o| {
                 o.id() != e.id()
                     && o.def().is_some_and(|od| od.is_able_to_move() && od.is_able_to_attack())

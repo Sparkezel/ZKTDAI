@@ -23,7 +23,8 @@ pub const NO_TIMEOUT: i32 = i32::MAX;
 handle!(
     /// A unit, friendly or enemy. Queries on units the AI cannot see return
     /// engine defaults (zero positions, `None` defs).
-    Unit, unit_id
+    Unit,
+    unit_id
 );
 
 getters!(Unit.unit_id {

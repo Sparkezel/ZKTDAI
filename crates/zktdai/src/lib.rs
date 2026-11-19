@@ -14,8 +14,8 @@ mod economy;
 mod fortify;
 mod porc;
 mod sabotage;
-mod territory;
 mod terraform;
+mod territory;
 mod war_chest;
 
 pub use ai::Zktdai;

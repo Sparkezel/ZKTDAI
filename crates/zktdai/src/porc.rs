@@ -11,8 +11,8 @@ use springai::{Unit, UnitDef, Vec3, opt};
 use crate::ai::Ctx;
 use crate::defs::Role;
 use crate::economy::build_at;
-use crate::territory::Territory;
 use crate::terraform;
+use crate::territory::Territory;
 use crate::war_chest::{ProjectKind, WarChest};
 
 /// Frames without combat after which a backline turret may be deconned (10 min).
@@ -44,7 +44,7 @@ impl Porc {
     }
 
     /// Stamp a turret's last combat frame (from our WeaponFired).
-    pub fn note_combat(&mut self, ctx: &Ctx, unit: Unit, frame: i32) {
+    pub fn note_combat(&mut self, unit: Unit, frame: i32) {
         if unit.def().is_some_and(|d| !d.is_able_to_move() && d.is_able_to_attack()) {
             self.last_combat.insert(unit.id(), frame);
         }
@@ -73,11 +73,8 @@ impl Porc {
                 d.is_able_to_move() && (n.contains("jump") || n.contains("spider"))
             })
         });
-        let enemy_raider_heavy = enemies
-            .iter()
-            .filter(|e| e.def().is_some_and(|d| ctx.defs.role(d) == Role::Raider))
-            .count()
-            >= 5;
+        let enemy_raider_heavy =
+            enemies.iter().filter(|e| e.def().is_some_and(|d| ctx.defs.role(d) == Role::Raider)).count() >= 5;
         let enemy_air = enemies.iter().any(|e| e.def().is_some_and(|d| d.is_able_to_fly()));
 
         if ctx.frame >= self.next_turret {
@@ -97,63 +94,59 @@ impl Porc {
                 };
                 let tier = if income >= 60.0 { 5.min(ladder.len() - 1) } else { base.min(ladder.len() - 1) };
                 // Picket as perimeter defense vs jumpbots/spiders.
-                let def = if enemy_jump_spider && ctx.defs.picket.is_some() {
-                    ctx.defs.picket.unwrap()
-                } else {
-                    ladder[tier]
+                let def = match (enemy_jump_spider, ctx.defs.picket) {
+                    (true, Some(picket)) => picket,
+                    _ => ladder[tier],
                 };
                 let cost = def.cost(metal);
-                if war.can_spend(ctx, ProjectKind::Porc, cost) {
-                    if let Some(site) = self.turret_site(ctx, terr, def, tier) {
-                        if let Some(builder) = idle_worker_near(ctx, roles, site, 1600.0) {
-                            let y = cb.map().elevation_at(site.x, site.z);
-                            if builder.build(def, Vec3::new(site.x, y, site.z), 0, opt::NONE) {
-                                war.note_porc_spend(cost);
-                                cb.log(&format!(
-                                    "[porc] frame={} {} at ({:.0},{:.0}) tier={tier}",
-                                    ctx.frame,
-                                    def.name(),
-                                    site.x,
-                                    site.z
-                                ));
-                            }
-                        }
+                if war.can_spend(ctx, ProjectKind::Porc, cost)
+                    && let Some(site) = self.turret_site(ctx, terr, def, tier)
+                    && let Some(builder) = idle_worker_near(ctx, roles, site, 1600.0)
+                {
+                    let y = cb.map().elevation_at(site.x, site.z);
+                    if builder.build(def, Vec3::new(site.x, y, site.z), 0, opt::NONE) {
+                        war.note_porc_spend(cost);
+                        cb.log(&format!(
+                            "[porc] frame={} {} at ({:.0},{:.0}) tier={tier}",
+                            ctx.frame,
+                            def.name(),
+                            site.x,
+                            site.z
+                        ));
                     }
                 }
             }
         }
 
         // AA ladder when the enemy shows air
-        if ctx.frame >= self.next_aa && !ctx.defs.aa_ladder.is_empty() {
-            if enemy_air {
-                let aa = if income < 15.0 {
-                    ctx.defs.aa_ladder[0]
-                } else if income < 40.0 && ctx.defs.aa_ladder.len() > 1 {
-                    ctx.defs.aa_ladder[1]
-                } else if ctx.defs.aa_ladder.len() > 2 {
-                    ctx.defs.aa_ladder[2]
-                } else {
-                    ctx.defs.aa_ladder[0]
-                };
-                let cost = aa.cost(metal);
-                if war.can_spend(ctx, ProjectKind::Porc, cost) {
-                    if let Some(builder) = idle_worker_near(ctx, roles, ctx.our_start, 800.0) {
-                        if build_at(cb, builder, aa, ctx.our_start, 300.0) {
-                            war.note_porc_spend(cost);
-                        }
-                    }
-                }
-                self.next_aa = ctx.frame + 900;
+        if ctx.frame >= self.next_aa && !ctx.defs.aa_ladder.is_empty() && enemy_air {
+            let aa = if income < 15.0 {
+                ctx.defs.aa_ladder[0]
+            } else if income < 40.0 && ctx.defs.aa_ladder.len() > 1 {
+                ctx.defs.aa_ladder[1]
+            } else if ctx.defs.aa_ladder.len() > 2 {
+                ctx.defs.aa_ladder[2]
+            } else {
+                ctx.defs.aa_ladder[0]
+            };
+            let cost = aa.cost(metal);
+            if war.can_spend(ctx, ProjectKind::Porc, cost)
+                && let Some(builder) = idle_worker_near(ctx, roles, ctx.our_start, 800.0)
+                && build_at(cb, builder, aa, ctx.our_start, 300.0)
+            {
+                war.note_porc_spend(cost);
             }
+            self.next_aa = ctx.frame + 900;
         }
 
         // one radar near the base
-        if let Some(radar) = ctx.defs.radar {
+        if let Some(radar) = ctx.defs.get("staticradar") {
             let have = cb.team_units().iter().any(|u| u.def().is_some_and(|d| d.name() == "staticradar"));
-            if !have && war.can_spend(ctx, ProjectKind::Porc, radar.cost(metal)) {
-                if let Some(builder) = idle_worker_near(ctx, roles, ctx.our_start, 800.0) {
-                    build_at(cb, builder, radar, ctx.our_start, 300.0);
-                }
+            if !have
+                && war.can_spend(ctx, ProjectKind::Porc, radar.cost(metal))
+                && let Some(builder) = idle_worker_near(ctx, roles, ctx.our_start, 800.0)
+            {
+                build_at(cb, builder, radar, ctx.our_start, 300.0);
             }
         }
 
@@ -176,14 +169,14 @@ impl Porc {
         let cb = ctx.cb;
         if tier <= 1 {
             // nearest owned, not-yet-turreted mex spot to the front
-            if let Some((i, spot)) = ctx
-                .spots
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| terr.owned[*i] && !self.turreted_spots.contains(i))
-                .min_by(|(_, a), (_, b)| {
-                    a.distance_2d(terr.front).partial_cmp(&b.distance_2d(terr.front)).unwrap_or(std::cmp::Ordering::Equal)
-                })
+            if let Some((i, spot)) =
+                ctx.spots.iter().enumerate().filter(|(i, _)| terr.owned[*i] && !self.turreted_spots.contains(i)).min_by(
+                    |(_, a), (_, b)| {
+                        a.distance_2d(terr.front)
+                            .partial_cmp(&b.distance_2d(terr.front))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    },
+                )
             {
                 let dir = terr.our_centroid - *spot;
                 let len = dir.length_2d().max(1.0);
@@ -229,11 +222,20 @@ impl Porc {
         let len = dir.length_2d().max(1.0);
         let perp = Vec3::xz(-dir.z / len, dir.x / len);
         let mid = terr.front;
-        let points: Vec<Vec3> =
-            (-3..=3).map(|k| Vec3::xz(mid.x + perp.x * 100.0 * k as f32, mid.z + perp.z * 100.0 * k as f32)).collect();
+        let points = terraform::line_points(
+            Vec3::xz(mid.x - perp.x * 300.0, mid.z - perp.z * 300.0),
+            Vec3::xz(mid.x + perp.x * 300.0, mid.z + perp.z * 300.0),
+            100.0,
+        );
         let tag = ctx.frame + 1;
         if terraform::terraform(cb, &builders, &points, -12.0, tag) {
-            cb.log(&format!("[porc] frame={} ditch at ({:.0},{:.0}) by {} workers", ctx.frame, mid.x, mid.z, builders.len()));
+            cb.log(&format!(
+                "[porc] frame={} ditch at ({:.0},{:.0}) by {} workers",
+                ctx.frame,
+                mid.x,
+                mid.z,
+                builders.len()
+            ));
         }
     }
 
@@ -258,10 +260,15 @@ impl Porc {
             }
         }
         for t in doomed {
-            if let Some(w) = idle_worker_near(ctx, roles, t.pos(), 900.0) {
-                if w.reclaim_unit(t, opt::NONE) {
-                    cb.log(&format!("[porc] frame={} decon {} ({})", ctx.frame, t.def().map(|d| d.name()).unwrap_or_default(), t.id()));
-                }
+            if let Some(w) = idle_worker_near(ctx, roles, t.pos(), 900.0)
+                && w.reclaim_unit(t, opt::NONE)
+            {
+                cb.log(&format!(
+                    "[porc] frame={} decon {} ({})",
+                    ctx.frame,
+                    t.def().map(|d| d.name()).unwrap_or_default(),
+                    t.id()
+                ));
             }
         }
     }

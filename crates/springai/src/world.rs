@@ -457,7 +457,8 @@ impl Map {
     pub fn resource_map_spots(&self, res: Resource) -> Vec<Vec3> {
         let cb = self.cb;
         let floats = read_floats(|buf, max| ffi!(cb, Map_getResourceMapSpotsPositions, res.id(), buf, max));
-        floats.chunks_exact(3).map(|c| Vec3::new(c[0], c[1], c[2])).collect()
+        let (chunks, _) = floats.as_chunks::<3>();
+        chunks.iter().map(|c| Vec3::new(c[0], c[1], c[2])).collect()
     }
 
     /// Radius around a spot within which an extractor (mex) works it.

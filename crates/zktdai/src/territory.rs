@@ -61,25 +61,27 @@ impl Territory {
         let (mut ox, mut oz, mut on) = (0.0, 0.0, 0);
         for u in cb.team_units() {
             let Some(d) = u.def() else { continue };
-            if !d.is_able_to_move() && d.extracts_resource(metal) > 0.0 {
-                if let Some(i) = self.nearest_spot(ctx, u.pos(), radius) {
-                    self.owned[i] = true;
-                    ox += ctx.spots[i].x;
-                    oz += ctx.spots[i].z;
-                    on += 1;
-                }
+            if !d.is_able_to_move()
+                && d.extracts_resource(metal) > 0.0
+                && let Some(i) = self.nearest_spot(ctx, u.pos(), radius)
+            {
+                self.owned[i] = true;
+                ox += ctx.spots[i].x;
+                oz += ctx.spots[i].z;
+                on += 1;
             }
         }
         let (mut ex, mut ez, mut en) = (0.0, 0.0, 0);
         for e in cb.enemy_units_in_radar_and_los() {
             let Some(d) = e.def() else { continue };
-            if !d.is_able_to_move() && d.extracts_resource(metal) > 0.0 {
-                if let Some(i) = self.nearest_spot(ctx, e.pos(), radius) {
-                    self.enemy[i] = true;
-                    ex += ctx.spots[i].x;
-                    ez += ctx.spots[i].z;
-                    en += 1;
-                }
+            if !d.is_able_to_move()
+                && d.extracts_resource(metal) > 0.0
+                && let Some(i) = self.nearest_spot(ctx, e.pos(), radius)
+            {
+                self.enemy[i] = true;
+                ex += ctx.spots[i].x;
+                ez += ctx.spots[i].z;
+                en += 1;
             }
         }
         if on > 0 {
@@ -88,17 +90,13 @@ impl Territory {
         if en > 0 {
             self.enemy_centroid = Vec3::xz(ex / en as f32, ez / en as f32);
         }
-        self.front =
-            Vec3::xz((self.our_centroid.x + self.enemy_centroid.x) / 2.0, (self.our_centroid.z + self.enemy_centroid.z) / 2.0);
+        self.front = Vec3::xz(
+            (self.our_centroid.x + self.enemy_centroid.x) / 2.0,
+            (self.our_centroid.z + self.enemy_centroid.z) / 2.0,
+        );
         let total = ctx.spots.len().max(1);
         self.share = self.owned.iter().filter(|o| **o).count() as f32 / total as f32;
-        self.enemy_spots = ctx
-            .spots
-            .iter()
-            .zip(&self.enemy)
-            .filter(|(_, e)| **e)
-            .map(|(s, _)| *s)
-            .collect();
+        self.enemy_spots = ctx.spots.iter().zip(&self.enemy).filter(|(_, e)| **e).map(|(s, _)| *s).collect();
     }
 
     /// The next spot to claim. Below the territory target: the nearest free
