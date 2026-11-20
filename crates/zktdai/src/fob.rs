@@ -19,6 +19,7 @@ use crate::defs::Role;
 use crate::economy::build_at;
 use crate::terraform;
 use crate::territory::Territory;
+use crate::threat::Threat;
 use crate::war_chest::{ProjectKind, ProjectState, WarChest};
 
 /// Minimum buildpower the base holds.
@@ -29,6 +30,11 @@ const PIT_DEPTH: f32 = 40.0;
 const BASE_RADIUS: f32 = 500.0;
 /// How far behind the front the base is sited.
 const SITE_BEHIND_FRONT: f32 = 350.0;
+/// Local superiority for naked base work (caretakers, pit digs, heavy
+/// escalation): our army within `BASE_ARMY_RADIUS` of the base OR no enemy on
+/// radar+LOS within `BASE_ENEMY_RADIUS` (plan round 2 #4; threatmap #7).
+const BASE_ARMY_RADIUS: f32 = 600.0;
+const BASE_ENEMY_RADIUS: f32 = 900.0;
 /// A pit being dug; the nanoframe goes down only once it is complete.
 struct PendingPit {
     pos: Vec3,
@@ -81,7 +87,14 @@ impl Fob {
         Fob { pos: None, mobile: HashSet::new(), pending: None, pit_cooldown: 0, next: 1200 }
     }
 
-    pub fn update(&mut self, ctx: &Ctx, roles: &HashMap<i32, Role>, terr: &Territory, war: &mut WarChest) {
+    pub fn update(
+        &mut self,
+        ctx: &Ctx,
+        roles: &HashMap<i32, Role>,
+        terr: &Territory,
+        threat: &Threat,
+        war: &mut WarChest,
+    ) {
         let cb = ctx.cb;
         let Some(metal) = ctx.metal else { return };
         if ctx.frame < self.next {
@@ -138,8 +151,12 @@ impl Fob {
             w.move_to(pos, opt::NONE);
         }
 
+        // Naked caretakers only under local superiority at the base (threatmap).
+        let superior = threat.local_superiority(ctx, roles, pos, BASE_ARMY_RADIUS, BASE_ENEMY_RADIUS);
+
         // Static buildpower expands on demand while below MIN_BP.
         if ctx.opts.caretakers
+            && superior
             && static_bp < MIN_BP
             && let Some(ca) = ctx.defs.caretaker
         {
@@ -214,6 +231,7 @@ impl Fob {
         }
         if self.pending.is_none()
             && ctx.frame >= self.pit_cooldown
+            && superior
             && let Some((def, kind)) = next_pit
         {
             let cost = def.cost(metal);
@@ -242,6 +260,7 @@ impl Fob {
             let cost = h.cost(metal);
             if !have_heavy
                 && !project_active
+                && superior
                 && income >= 40.0
                 && war.request_priority(ctx, "fob-heavy", ProjectKind::HeavyPorc, Some(h), cost, 0.3)
                 && let Some(w) = idle_worker_near(cb, roles, pos, 1600.0)

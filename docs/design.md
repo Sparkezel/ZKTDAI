@@ -31,7 +31,7 @@ Offensive-defense. The AI's goals, in priority order:
 | Perimeter porc + terraform | `crates/zktdai/src/porc.rs` | `crates/zkgbai/src/economy/porc_policy.rs`, `fortify.rs`, `terraform.rs`, `crates/terrain/src/fortify.rs` (site scoring, ditch value, chokepoints) |
 | Sabotage / surgical strikes | `crates/zktdai/src/sabotage.rs` | `crates/zkgbai/src/military/strikes/` (opportunities, prediction, evasion), `airstrikes/`, `handlers/misc/sappers/` (cloaked strikes) |
 | Raiders / skirm / assault / artillery | `crates/zktdai/src/army.rs` | `crates/zkgbai/src/military/handlers/{raider,squad,precision}.rs`, `military/taskforce/` (army composition doctrine), `military/fightsim/` (when to fight vs retreat) |
-| Enemy tracking, threat, AA-from-bearings | (partly in `territory.rs` / `sabotage.rs`) | `crates/zkgbai/src/military/enemy.rs`, `intel.rs`, `radar.rs` |
+| Enemy tracking, threat, AA-from-bearings | `crates/zktdai/src/threat.rs` (threatmap v0: radar/LOS sightings, incursion ETAs, local superiority), `sabotage.rs` (critical-static last-seen) | `crates/zkgbai/src/military/enemy.rs`, `intel.rs`, `radar.rs`, `crates/terrain/src/threat.rs` |
 
 ## Development loop
 

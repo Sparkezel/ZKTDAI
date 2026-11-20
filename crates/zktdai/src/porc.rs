@@ -13,6 +13,7 @@ use crate::defs::Role;
 use crate::economy::build_at;
 use crate::terraform;
 use crate::territory::Territory;
+use crate::threat::Threat;
 use crate::war_chest::{ProjectKind, WarChest};
 
 /// Frames without combat after which a backline turret may be deconned (10 min).
@@ -22,6 +23,9 @@ const DECON_BEHIND_FRONT: f32 = 300.0;
 /// Turrets within this range of a critical structure are point defense and are
 /// never deconned. AA towers are never deconned either.
 const PROTECT_RADIUS: f32 = 600.0;
+/// Never decon a turret while a threat is inbound within this range of it
+/// (plan round 2 #7: reclaim must not feed the enemy mid-incursion).
+const DECON_INCURSION_RADIUS: f32 = 900.0;
 
 pub struct Porc {
     next_turret: i32,
@@ -69,7 +73,14 @@ impl Porc {
         }
     }
 
-    pub fn update(&mut self, ctx: &Ctx, roles: &HashMap<i32, Role>, terr: &Territory, war: &mut WarChest) {
+    pub fn update(
+        &mut self,
+        ctx: &Ctx,
+        roles: &HashMap<i32, Role>,
+        terr: &Territory,
+        threat: &Threat,
+        war: &mut WarChest,
+    ) {
         if !ctx.opts.porc {
             return;
         }
@@ -169,7 +180,7 @@ impl Porc {
         // decon turrets left behind the front
         if ctx.frame >= self.next_decon {
             self.next_decon = ctx.frame + 600;
-            self.decon(ctx, roles, terr);
+            self.decon(ctx, roles, terr, threat);
         }
     }
 
@@ -250,9 +261,9 @@ impl Porc {
     }
 
     /// Reclaim our turrets that have seen no combat for a long time and sit
-    /// behind the current front. AA towers and turrets guarding critical
-    /// structures are exempt.
-    fn decon(&mut self, ctx: &Ctx, roles: &HashMap<i32, Role>, terr: &Territory) {
+    /// behind the current front. AA towers, turrets guarding critical
+    /// structures, and turrets with an inbound incursion nearby are exempt.
+    fn decon(&mut self, ctx: &Ctx, roles: &HashMap<i32, Role>, terr: &Territory, threat: &Threat) {
         let cb = ctx.cb;
         let dir = terr.enemy_centroid - terr.our_centroid;
         let len = dir.length_2d().max(1.0);
@@ -273,6 +284,10 @@ impl Porc {
                 continue;
             }
             if protected.iter().any(|p| u.pos().distance_2d(*p) < PROTECT_RADIUS) {
+                continue;
+            }
+            // never reclaim into an inbound incursion (threatmap)
+            if threat.incursion_inbound(u.pos(), DECON_INCURSION_RADIUS) {
                 continue;
             }
             let quiet = ctx.frame - self.last_combat.get(&u.id()).copied().unwrap_or(0) > DECON_QUIET_FRAMES;

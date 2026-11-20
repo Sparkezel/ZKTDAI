@@ -37,6 +37,13 @@ raiders + artillery; a way to force the game to end.
 5. **Threatmap v0**: radar/LOS enemy density per region of the spot graph + incursion
    timers (when a raid can reach each of our spots). Port from
    `crates/terrain/src/threat.rs`, `military/incursions.rs`.
+   **Landed (issue #7)** as `crates/zktdai/src/threat.rs`: per-enemy sighting table
+   (radar+LOS, 60 s staleness), 1024-elmo density cells, `raid_eta` per position,
+   `local_superiority` (army near OR no enemy on radar+LOS). Consumers: porc decon
+   never reclaims into an inbound incursion; the fusion production pause is gated on
+   no incursion near the base; naked FOB caretakers / pit digs / heavy escalation
+   require local superiority; expansion constructors skip hot spots (#11 escort rule).
+   `threatmap` AIOption (fail-open when off).
 
 ## Phase 2 — porc v2 (income-keyed, conditional, self-cleaning)
 

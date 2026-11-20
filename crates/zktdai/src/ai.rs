@@ -22,6 +22,7 @@ use crate::planner::Planner;
 use crate::porc::Porc;
 use crate::sabotage::Sabotage;
 use crate::territory::Territory;
+use crate::threat::{Threat, UPDATE_FRAMES};
 use crate::war_chest::{WarChest, WarChestOpts};
 
 /// Start-script options (declared in `data/AIOptions.lua`).
@@ -46,6 +47,8 @@ pub struct Opts {
     pub strategy: String,
     pub walled_mexes: bool,
     pub caretakers: bool,
+    /// Threatmap v0 on/off (issue #7); off = fail-open, queries report no threat.
+    pub threatmap: bool,
 }
 
 /// Shared per-frame game view the modules read.
@@ -83,6 +86,7 @@ pub struct Zktdai {
     sab: Sabotage,
     army: Army,
     planner: Planner,
+    threat: Threat,
     war: WarChest,
 }
 
@@ -111,6 +115,7 @@ impl SkirmishAi for Zktdai {
             }),
             walled_mexes: bool_opt(cb, "walled_mexes", true),
             caretakers: bool_opt(cb, "caretakers", true),
+            threatmap: bool_opt(cb, "threatmap", true),
         };
         let war = WarChest::new(
             cb,
@@ -150,6 +155,7 @@ impl SkirmishAi for Zktdai {
             sab: Sabotage::new(),
             army: Army::new(),
             planner: Planner::new(),
+            threat: Threat::new(),
             war,
         }
     }
@@ -204,13 +210,14 @@ impl SkirmishAi for Zktdai {
                 if frame % 30 == 0 {
                     self.war.update(&self.ctx);
                 }
-                if frame % 60 == 0 {
+                if frame % UPDATE_FRAMES == 0 {
                     self.terr.update(&self.ctx, &self.roles);
+                    self.threat.update(&self.ctx);
                     let owned = self.terr.owned.clone();
                     self.ordered_spots.retain(|i| !owned[*i]);
                 }
                 if frame % 150 == 0 {
-                    self.porc.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
+                    self.porc.update(&self.ctx, &self.roles, &self.terr, &self.threat, &mut self.war);
                 }
                 if frame % 120 == 0 {
                     self.sab.update(&self.ctx, &self.roles, &self.terr);
@@ -219,7 +226,7 @@ impl SkirmishAi for Zktdai {
                     self.fort.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
                 }
                 if frame % 300 == 0 {
-                    self.fob.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
+                    self.fob.update(&self.ctx, &self.roles, &self.terr, &self.threat, &mut self.war);
                     self.eco.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
                     self.army.update(&self.ctx, &self.roles, &self.terr);
                     self.planner.update(
@@ -227,6 +234,7 @@ impl SkirmishAi for Zktdai {
                         &self.roles,
                         &self.terr,
                         &mut self.ordered_spots,
+                        &self.threat,
                         &mut self.war,
                         &self.fob.mobile,
                     );
@@ -271,6 +279,7 @@ impl SkirmishAi for Zktdai {
             }
             Event::EnemyEnterLos { enemy } | Event::EnemyCreated { enemy } | Event::EnemyFinished { enemy } => {
                 self.army.note_enemy(&self.ctx, enemy);
+                self.threat.note_enemy(&self.ctx, enemy);
             }
             Event::WeaponFired { unit, .. } => self.porc.note_combat(unit, self.ctx.frame),
             Event::UnitDamaged { unit, .. } => {
@@ -297,12 +306,13 @@ impl Zktdai {
     fn status_json(&self) -> String {
         let war = self.war.status_json(&self.ctx);
         format!(
-            "{{\"army\":{{\"units\":{},\"scouts\":{}}},\"territory\":{{\"share\":{:.3},\"front\":[{:.0},{:.0}]}},\"war\":{}}}",
+            "{{\"army\":{{\"units\":{},\"scouts\":{}}},\"territory\":{{\"share\":{:.3},\"front\":[{:.0},{:.0}]}},\"threat\":{{\"tracked\":{}}},\"war\":{}}}",
             self.roles.values().filter(|r| r.is_combat()).count(),
             self.roles.values().filter(|r| **r == Role::Scout).count(),
             self.terr.share,
             self.terr.front.x,
             self.terr.front.z,
+            self.threat.tracked(),
             &war[1..] // strip outer '{' to nest
         )
     }
@@ -340,7 +350,7 @@ impl Zktdai {
             ),
             Role::Factory => {
                 let want = self.planner.wanted_cons(&self.ctx, &self.terr);
-                self.army.factory_idle(&self.ctx, unit, &self.roles, &mut self.war, want);
+                self.army.factory_idle(&self.ctx, unit, &self.roles, &self.threat, &mut self.war, want);
             }
             r if r.is_combat() || r.is_scout() => {
                 let push = self.army.push_ready(&self.ctx, &self.roles) || self.army.all_in(&self.ctx);

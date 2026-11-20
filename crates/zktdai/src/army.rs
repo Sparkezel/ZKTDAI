@@ -11,12 +11,16 @@ use springai::{Unit, UnitDef, Vec3, opt};
 use crate::ai::Ctx;
 use crate::defs::Role;
 use crate::territory::Territory;
+use crate::threat::Threat;
 use crate::war_chest::{ProjectKind, ProjectState, WarChest};
 
 /// Frames without a seen enemy mex/factory after which we go all-in (20 min).
 const ENDGAME_QUIET_FRAMES: i32 = 36000;
 /// Raiders that scout before joining raider parties.
 const OPENING_SCOUTS: usize = 2;
+/// Radius around our base checked for inbound incursions before pausing army
+/// production for the first fusion (plan round 4 #4: gate on the threatmap).
+const FUSION_PAUSE_SAFE_RADIUS: f32 = 1500.0;
 
 pub struct Army {
     cycle: usize,
@@ -73,14 +77,18 @@ impl Army {
         ctx: &Ctx,
         factory: Unit,
         roles: &HashMap<i32, Role>,
+        threat: &Threat,
         war: &mut WarChest,
         want_cons: usize,
     ) {
-        // pause production only for the big energy push (first fusion, bump >= 0.5)
+        // pause production only for the big energy push (first fusion, bump >= 0.5),
+        // and only while no incursion is inbound near our base (threatmap gate,
+        // plan round 4 #4 — pausing into a raid opens an army gap)
         if war
             .projects
             .iter()
             .any(|p| p.state == ProjectState::Active && p.kind == ProjectKind::Energy && p.budget_bump >= 0.5)
+            && !threat.incursion_inbound(ctx.our_start, FUSION_PAUSE_SAFE_RADIUS)
         {
             return;
         }

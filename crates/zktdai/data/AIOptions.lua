@@ -109,6 +109,13 @@ local options = {
 		type   = 'bool',
 		def    = true,
 	},
+	{
+		key    = 'threatmap',
+		name   = 'Threatmap',
+		desc   = 'Track radar/LOS enemy units and gate porc decon, the fusion production pause, caretaker placement and expansion escorts on incursions (fail-open when off).',
+		type   = 'bool',
+		def    = true,
+	},
 }
 
 return options

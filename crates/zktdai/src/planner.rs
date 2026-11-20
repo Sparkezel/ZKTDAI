@@ -14,6 +14,7 @@ use crate::ai::Ctx;
 use crate::defs::{Role, cmd};
 use crate::economy::{build_at, metal_cost, power_def, wants_energy};
 use crate::territory::Territory;
+use crate::threat::Threat;
 use crate::war_chest::{ProjectKind, ProjectState, WarChest};
 
 /// What a constructor is currently assigned to do.
@@ -56,6 +57,11 @@ const MIDGAME_INCOME: f32 = 30.0;
 const ESCORT_FRAMES: i32 = 600;
 /// Max tracked wreck positions.
 const MAX_WRECKS: usize = 64;
+/// Escort rule (plan round 2 #4, issue #11): a constructor may work a spot
+/// when our army is within `ESCORT_ARMY_RADIUS` of it OR no enemy is on
+/// radar+LOS within `ESCORT_ENEMY_RADIUS` of it.
+const ESCORT_ARMY_RADIUS: f32 = 300.0;
+const ESCORT_ENEMY_RADIUS: f32 = 400.0;
 
 pub struct Planner {
     jobs: HashMap<i32, ConJob>,
@@ -112,12 +118,14 @@ impl Planner {
         self.wrecks.push(pos);
     }
 
+    #[allow(clippy::too_many_arguments)] // ctx+roles+terr+threat are the shared read view
     pub fn update(
         &mut self,
         ctx: &Ctx,
         roles: &HashMap<i32, Role>,
         terr: &Territory,
         ordered: &mut HashSet<usize>,
+        threat: &Threat,
         war: &mut WarChest,
         fob_mobile: &HashSet<i32>,
     ) {
@@ -168,7 +176,7 @@ impl Planner {
             match job {
                 ConJob::Energy => self.energy_step(ctx, unit, war),
                 ConJob::Base => self.base_step(ctx, unit, war),
-                ConJob::Expand => self.expand_step(ctx, unit, roles, terr, ordered, war),
+                ConJob::Expand => self.expand_step(ctx, unit, roles, terr, ordered, threat, war),
                 ConJob::Reclaim => self.reclaim_step(unit, terr, pooled, group_pos.get(&id).copied()),
             }
         }
@@ -289,6 +297,7 @@ impl Planner {
     /// An expansion constructor: beeline to the nearest untaken mex, build it,
     /// then secure the cluster (lotus, + picket late); escorted by up to 3 idle
     /// raiders (or 1 skirm/riot).
+    #[allow(clippy::too_many_arguments)]
     fn expand_step(
         &mut self,
         ctx: &Ctx,
@@ -296,13 +305,22 @@ impl Planner {
         roles: &HashMap<i32, Role>,
         terr: &Territory,
         ordered: &mut HashSet<usize>,
+        threat: &Threat,
         war: &mut WarChest,
     ) {
         let cb = ctx.cb;
         let cur = ctx.metal.map(|m| cb.economy().current(m)).unwrap_or(0.0);
         let me = unit.pos();
+        // escort rule (#11): skip spots that are hot — enemy within
+        // ESCORT_ENEMY_RADIUS and no army within ESCORT_ARMY_RADIUS — unless
+        // this constructor already stands there (don't strand it)
         let target = (0..ctx.spots.len())
             .filter(|i| !terr.owned[*i] && !terr.enemy[*i] && !ordered.contains(i))
+            .filter(|i| {
+                let spot = ctx.spots[*i];
+                me.distance_2d(spot) <= 200.0
+                    || threat.local_superiority(ctx, roles, spot, ESCORT_ARMY_RADIUS, ESCORT_ENEMY_RADIUS)
+            })
             .min_by(|a, b| {
                 me.distance_2d(ctx.spots[*a])
                     .partial_cmp(&me.distance_2d(ctx.spots[*b]))

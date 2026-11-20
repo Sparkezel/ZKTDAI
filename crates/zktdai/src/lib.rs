@@ -18,6 +18,7 @@ mod porc;
 mod sabotage;
 mod terraform;
 mod territory;
+mod threat;
 mod war_chest;
 
 pub use ai::Zktdai;
