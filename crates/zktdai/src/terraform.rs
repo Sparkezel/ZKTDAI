@@ -10,9 +10,19 @@
 //! terraunits decay, so callers should track the tag and re-issue if needed.
 //! `height < 0` digs (pit/trench); `height > 0` raises (wall/spire).
 
+use std::sync::atomic::{AtomicI32, Ordering};
+
 use springai::{Callback, NO_TIMEOUT, Unit, Vec3, opt};
 
 use crate::defs::cmd;
+
+static NEXT_TAG: AtomicI32 = AtomicI32::new(1);
+
+/// Unique terraform job tag: the gadget keys pending jobs by (team, tag), so a
+/// reused tag overwrites the previous job.
+pub fn next_tag() -> i32 {
+    NEXT_TAG.fetch_add(1, Ordering::Relaxed)
+}
 
 pub fn terraform(cb: Callback, builders: &[Unit], points: &[Vec3], height: f32, tag: i32) -> bool {
     let Some(&first) = builders.first() else { return false };

@@ -199,6 +199,7 @@ impl SkirmishAi for Zktdai {
             }
             Event::UnitCreated { unit, builder } => {
                 self.war.on_unit_created(&self.ctx, unit, builder);
+                self.porc.note_created(unit, self.ctx.frame);
                 self.track(unit);
             }
             Event::UnitFinished { unit } => {
@@ -210,8 +211,12 @@ impl SkirmishAi for Zktdai {
                 self.war.on_unit_destroyed(&self.ctx, unit);
                 self.roles.remove(&unit.id());
             }
-            Event::UnitGiven { unit, .. } | Event::UnitCaptured { unit, .. } => {
-                self.roles.remove(&unit.id());
+            Event::UnitGiven { unit, new_team, .. } | Event::UnitCaptured { unit, new_team, .. } => {
+                if new_team == self.ctx.cb.game().my_team() {
+                    self.track(unit); // captured/given to us: it is ours now
+                } else {
+                    self.roles.remove(&unit.id());
+                }
             }
             Event::EnemyDestroyed { enemy, .. } => self.sab.forget(enemy.id()),
             Event::EnemyEnterLos { enemy } | Event::EnemyCreated { enemy } | Event::EnemyFinished { enemy } => {

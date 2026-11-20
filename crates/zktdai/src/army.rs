@@ -56,9 +56,10 @@ impl Army {
         self.scout_ids.contains(&id)
     }
 
-    /// True when the enemy economy has been unseen long enough to force the end.
+    /// True when the enemy economy has been unseen long enough to force the end
+    /// (including never seen: 0 means "since game start").
     pub fn all_in(&self, ctx: &Ctx) -> bool {
-        self.last_enemy_eco_seen > 0 && ctx.frame - self.last_enemy_eco_seen > ENDGAME_QUIET_FRAMES
+        ctx.frame - self.last_enemy_eco_seen > ENDGAME_QUIET_FRAMES
     }
 
     pub fn push_ready(&self, ctx: &Ctx, roles: &HashMap<i32, Role>) -> bool {
@@ -68,7 +69,12 @@ impl Army {
     /// A factory that just went idle builds the next unit of the mix — unless
     /// a big energy project (first fusion) is active and production is paused.
     pub fn factory_idle(&mut self, ctx: &Ctx, factory: Unit, war: &WarChest) {
-        if war.projects.iter().any(|p| p.state == ProjectState::Active && p.kind == ProjectKind::Energy) {
+        // pause production only for the big energy push (first fusion, bump >= 0.5)
+        if war
+            .projects
+            .iter()
+            .any(|p| p.state == ProjectState::Active && p.kind == ProjectKind::Energy && p.budget_bump >= 0.5)
+        {
             return;
         }
         let cb = ctx.cb;

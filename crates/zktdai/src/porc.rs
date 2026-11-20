@@ -43,6 +43,13 @@ impl Porc {
         }
     }
 
+    /// Stamp a freshly created turret so decon's quiet timer starts at build time.
+    pub fn note_created(&mut self, unit: Unit, frame: i32) {
+        if unit.def().is_some_and(|d| !d.is_able_to_move() && d.is_able_to_attack()) {
+            self.last_combat.insert(unit.id(), frame);
+        }
+    }
+
     /// Stamp a turret's last combat frame (from our WeaponFired).
     pub fn note_combat(&mut self, unit: Unit, frame: i32) {
         if unit.def().is_some_and(|d| !d.is_able_to_move() && d.is_able_to_attack()) {
@@ -93,9 +100,9 @@ impl Porc {
                     2
                 };
                 let tier = if income >= 60.0 { 5.min(ladder.len() - 1) } else { base.min(ladder.len() - 1) };
-                // Picket as perimeter defense vs jumpbots/spiders.
-                let def = match (enemy_jump_spider, ctx.defs.picket) {
-                    (true, Some(picket)) => picket,
+                // Picket as perimeter defense vs jumpbots/spiders (low tiers only).
+                let def = match (enemy_jump_spider, ctx.defs.picket, tier) {
+                    (true, Some(picket), t) if t <= 2 => picket,
                     _ => ladder[tier],
                 };
                 let cost = def.cost(metal);
@@ -227,7 +234,7 @@ impl Porc {
             Vec3::xz(mid.x + perp.x * 300.0, mid.z + perp.z * 300.0),
             100.0,
         );
-        let tag = ctx.frame + 1;
+        let tag = terraform::next_tag();
         if terraform::terraform(cb, &builders, &points, -12.0, tag) {
             cb.log(&format!(
                 "[porc] frame={} ditch at ({:.0},{:.0}) by {} workers",

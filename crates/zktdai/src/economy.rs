@@ -123,12 +123,13 @@ impl Economy {
                 };
                 let next = self.opening_mexes.iter().copied().find(|i| !ordered.contains(i) && !terr.owned[*i]);
                 match next {
-                    Some(i) if cur >= metal_cost(ctx, mex) => {
-                        if build_at(cb, unit, mex, ctx.spots[i], 128.0) {
+                    None => self.opening = Opening::WindGrid,
+                    Some(i) => {
+                        // stay in Mexes while we cannot afford it yet
+                        if cur >= metal_cost(ctx, mex) && build_at(cb, unit, mex, ctx.spots[i], 128.0) {
                             ordered.insert(i);
                         }
                     }
-                    _ => self.opening = Opening::WindGrid,
                 }
             }
             Opening::WindGrid => {
@@ -242,10 +243,6 @@ impl Economy {
                         || p.state == crate::war_chest::ProjectState::Active)
             })
         };
-        let count_alive =
-            |roles: &HashMap<i32, Role>, pred: &dyn Fn(&Role) -> bool| roles.values().filter(|r| pred(r)).count();
-        let _ = count_alive;
-
         // storages to reach the stockpile target
         let storage = cb.economy().storage(metal);
         if let Some(s) = ctx.defs.storage

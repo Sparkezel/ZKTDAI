@@ -226,7 +226,8 @@ impl WarChest {
         // Reserve floor: ~10% of storage capacity, at least the starting reserve,
         // never more than the stockpile target.
         let storage = self.storage_metal(ctx);
-        self.reserve_metal = (0.1 * storage).clamp(self.reserve_metal.min(50.0), self.stockpile_target);
+        let lo = self.reserve_metal.min(50.0).min(self.stockpile_target); // clamp panics if lo > hi
+        self.reserve_metal = (0.1 * storage).clamp(lo, self.stockpile_target);
         if ctx.frame - self.porc_window_start >= PORC_WINDOW {
             self.porc_window_start = ctx.frame;
             self.porc_spent = 0.0;
