@@ -159,13 +159,31 @@ impl Sabotage {
         // Resolve the unit if the engine still tracks it; otherwise attack the
         // remembered position (hidden/jammed target).
         let target = Unit::from_id(cb, id);
-        for u in strike.iter().take(n) {
-            match target {
-                Some(t) => {
-                    u.attack(t, opt::NONE);
-                }
-                None => {
-                    u.attack_area(pos, 120.0, opt::NONE);
+        // A hidden cloaked target (the radar jammer, Cornea: initCloaked with
+        // minCloakDistance/decloak_distance = 100 in staticjammer.lua) must be
+        // decloaked before it can be seen: the nearest strike unit stands within
+        // half the decloak radius (and within 40 elmos) of the remembered spot.
+        let decloak_stand = if target.is_none() && def.is_start_cloaked() {
+            let decloak = def.decloak_distance();
+            Some(if decloak > 0.0 { (0.5 * decloak).min(40.0) } else { 40.0 })
+        } else {
+            None
+        };
+        for (k, u) in strike.iter().take(n).enumerate() {
+            if k == 0
+                && let Some(stand) = decloak_stand
+            {
+                let dir = ctx.our_start - pos;
+                let len = dir.length_2d().max(1.0);
+                u.move_to(pos + dir * (stand / len), opt::NONE);
+            } else {
+                match target {
+                    Some(t) => {
+                        u.attack(t, opt::NONE);
+                    }
+                    None => {
+                        u.attack_area(pos, 120.0, opt::NONE);
+                    }
                 }
             }
         }
