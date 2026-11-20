@@ -6,7 +6,7 @@
 //! our vision stays in `seen` at its last-seen position (statics never move), so
 //! we keep attacking where it stands even while it is hidden.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use springai::{Unit, UnitDef, Vec3, opt};
 
@@ -103,6 +103,25 @@ impl Sabotage {
                 continue; // statics worth striking only
             }
             self.seen.insert(e.id(), (d, e.pos(), ctx.frame));
+        }
+        // All targets are static and never move: if the engine no longer knows the
+        // unit, or we have vision at the remembered spot and no building is there,
+        // assume it was destroyed and drop it from memory.
+        let visible: HashSet<i32> = enemies.iter().map(|e| e.id()).collect();
+        let mut gone: Vec<(i32, Vec3)> = Vec::new();
+        for (&id, &(_, pos, _)) in &self.seen {
+            let unknown = Unit::from_id(cb, id).is_none();
+            let unseen_with_vision = !visible.contains(&id) && !cb.friendly_units_in(pos, 700.0).is_empty();
+            if unknown || unseen_with_vision {
+                gone.push((id, pos));
+            }
+        }
+        for (id, pos) in gone {
+            cb.log(&format!(
+                "[sabotage] frame={} target {} at ({:.0},{:.0}) assumed destroyed",
+                ctx.frame, id, pos.x, pos.z
+            ));
+            self.forget(id);
         }
         // Pick the best remembered target; its defenders are checked against what
         // is visible now near the remembered position.
