@@ -8,7 +8,12 @@
 //! written incrementally from the metal spent (`DoTerraformUpdate` ->
 //! `Spring.SetHeightMap`). Digs are cancelled when enemies approach and idle
 //! terraunits decay, so callers should track the tag and re-issue if needed.
-//! `height < 0` digs (pit/trench); `height > 0` raises (wall/spire).
+//!
+//! Kinds: `KIND_RAISE` (2.0) raises/lowers by `height` elmos with a pyramid
+//! skirt — pits/ditches use negative heights; `KIND_LEVEL` (1.0) levels to the
+//! absolute `height` (flat top) — walls and platforms. Tags count from `1<<20`:
+//! the AI's own, while widgets/players count from 1 (same convention as
+//! zkgbai-rs).
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -16,7 +21,10 @@ use springai::{Callback, NO_TIMEOUT, Unit, Vec3, opt};
 
 use crate::defs::cmd;
 
-static NEXT_TAG: AtomicI32 = AtomicI32::new(1);
+/// AI terraform tags count from here; widgets/players count from 1.
+const FIRST_TAG: i32 = 1 << 20;
+
+static NEXT_TAG: AtomicI32 = AtomicI32::new(FIRST_TAG);
 
 /// Unique terraform job tag: the gadget keys pending jobs by (team, tag), so a
 /// reused tag overwrites the previous job.
@@ -24,7 +32,25 @@ pub fn next_tag() -> i32 {
     NEXT_TAG.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Raise/lower along the `points` line by `height` elmos (negative digs).
 pub fn terraform(cb: Callback, builders: &[Unit], points: &[Vec3], height: f32, tag: i32) -> bool {
+    terraform_kind(cb, builders, points, height, tag, cmd::KIND_RAISE, false)
+}
+
+/// Level along the `points` line to the absolute `height` (flat top).
+pub fn terraform_level(cb: Callback, builders: &[Unit], points: &[Vec3], height: f32, tag: i32) -> bool {
+    terraform_kind(cb, builders, points, height, tag, cmd::KIND_LEVEL, false)
+}
+
+fn terraform_kind(
+    cb: Callback,
+    builders: &[Unit],
+    points: &[Vec3],
+    height: f32,
+    tag: i32,
+    kind: f32,
+    area: bool,
+) -> bool {
     let Some(&first) = builders.first() else { return false };
     if points.len() < 2 {
         return false;
@@ -32,12 +58,12 @@ pub fn terraform(cb: Callback, builders: &[Unit], points: &[Vec3], height: f32, 
     let n = points.len() as f32;
     let (cx, cz) = points.iter().fold((0.0, 0.0), |(x, z), p| (x + p.x / n, z + p.z / n));
     let mut params = vec![
-        cmd::KIND_RAISE,
+        kind,
         cb.game().my_team() as f32,
         cx,
         cz,
         tag as f32,
-        0.0, // a line, not a closed area
+        if area { 1.0 } else { 0.0 }, // closed area, or a line
         height,
         n,
         builders.len() as f32,

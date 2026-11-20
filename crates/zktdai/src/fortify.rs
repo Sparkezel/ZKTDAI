@@ -40,8 +40,12 @@ impl Fortify {
                 }
                 let toward = terr.enemy_centroid - *spot;
                 let pts = terraform::arc_points(*spot, toward, 40.0, 180.0, 30.0);
+                // flat-top wall: level to ground + 60 (zkgbai geo-box style)
+                let wall_top = cb.map().elevation_at(spot.x, spot.z) + 60.0;
                 let builders: Vec<Unit> = idle_workers(ctx, roles).into_iter().take(2).collect();
-                if builders.len() >= 2 && terraform::terraform(cb, &builders, &pts, 60.0, terraform::next_tag()) {
+                if builders.len() >= 2
+                    && terraform::terraform_level(cb, &builders, &pts, wall_top, terraform::next_tag())
+                {
                     self.walled.insert(i);
                     cb.log(&format!(
                         "[fortify] frame={} wall around mex {} at ({:.0},{:.0})",

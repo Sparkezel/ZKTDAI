@@ -15,8 +15,12 @@ pub mod cmd {
     pub const TERRAFORM_INTERNAL: i32 = 39801;
     /// Follow-up raise command the gadget expects from every builder.
     pub const RAISE: i32 = 39737;
-    /// Terraform kind "raise"; ditches/pits are a raise with negative height.
+    /// Terraform kind "raise" (relative; pyramid skirt); ditches/pits are a
+    /// raise with negative height.
     pub const KIND_RAISE: f32 = 2.0;
+    /// Terraform kind "level": to an absolute height, flat top, no-op where
+    /// already that high (walls, platforms).
+    pub const KIND_LEVEL: f32 = 1.0;
     /// ZK's priority command (economy/defense printing).
     pub const PRIORITY: i32 = 34220;
     /// ZK's morph command.
