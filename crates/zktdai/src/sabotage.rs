@@ -1,10 +1,14 @@
 //! Sabotage: when an enemy critical target is spotted without defenses, send
 //! a surgical strike at it — raiders/skirmishers for near targets, more of
 //! them (or artillery) for far ones.
+//!
+//! Targets are remembered: a radar jammer (or any critical static) that leaves
+//! our vision stays in `seen` at its last-seen position (statics never move), so
+//! we keep attacking where it stands even while it is hidden.
 
 use std::collections::HashMap;
 
-use springai::{Unit, opt};
+use springai::{Unit, UnitDef, Vec3, opt};
 
 use crate::ai::Ctx;
 use crate::defs::Role;
@@ -46,18 +50,43 @@ const DEFENSE_RADIUS: f32 = 700.0;
 /// Minimum frames before the same target is struck again.
 const REDISPATCH_FRAMES: i32 = 600;
 
+/// Strike value of a static def, or None if it is not a target. The `factory`
+/// hint decays with game time; heavies (non-flying, cost > 1000; commanders
+/// < 4000 exempt) are worth a strike even without a hint.
+fn target_value(ctx: &Ctx, d: UnitDef) -> Option<f32> {
+    let name = d.name();
+    let base = match VALUE_HINTS.iter().find(|(hint, _)| name.contains(*hint)) {
+        Some(&(hint, v)) => {
+            if hint == "factory" {
+                factory_value(ctx.frame)
+            } else {
+                v
+            }
+        }
+        None => 0.0,
+    };
+    let heavy = if ctx.defs.is_heavy(d) { 90.0 } else { 0.0 };
+    let v = base.max(heavy);
+    (v > 0.0).then_some(v)
+}
+
 pub struct Sabotage {
     /// Enemy unit id -> frame of the last strike dispatched at it.
     dispatched: HashMap<i32, i32>,
+    /// Remembered critical statics: id -> (def, last-seen pos, frame). Statics
+    /// never move, so the last-seen position stays exact; entries die with
+    /// `EnemyDestroyed` (`forget`).
+    seen: HashMap<i32, (UnitDef, Vec3, i32)>,
 }
 
 impl Sabotage {
     pub fn new() -> Self {
-        Sabotage { dispatched: HashMap::new() }
+        Sabotage { dispatched: HashMap::new(), seen: HashMap::new() }
     }
 
     pub fn forget(&mut self, id: i32) {
         self.dispatched.remove(&id);
+        self.seen.remove(&id);
     }
 
     pub fn update(&mut self, ctx: &Ctx, roles: &HashMap<i32, Role>, _terr: &Territory) {
@@ -66,36 +95,38 @@ impl Sabotage {
         }
         let cb = ctx.cb;
         let enemies = cb.enemy_units_in_radar_and_los();
-        let mut best: Option<(Unit, f32)> = None;
+        // Refresh memory with everything visible now. A jammer that leaves our
+        // vision stays remembered at its last-seen position.
         for e in &enemies {
             let Some(d) = e.def() else { continue };
-            if d.is_able_to_move() {
-                continue; // statics only
+            if d.is_able_to_move() || target_value(ctx, d).is_none() {
+                continue; // statics worth striking only
             }
-            let name = d.name();
-            let Some(&(hint, hint_value)) = VALUE_HINTS.iter().find(|(hint, _)| name.contains(*hint)) else { continue };
-            let hint_value = if hint == "factory" { factory_value(ctx.frame) } else { hint_value };
-            // heavies (non-flying, cost > 1000; commanders < 4000 exempt) are worth a strike too
-            let value = hint_value.max(if ctx.defs.is_heavy(d) { 90.0 } else { 0.0 });
+            self.seen.insert(e.id(), (d, e.pos(), ctx.frame));
+        }
+        // Pick the best remembered target; its defenders are checked against what
+        // is visible now near the remembered position.
+        let mut best: Option<(i32, UnitDef, Vec3, f32)> = None;
+        for (&id, &(d, pos, _seen)) in &self.seen {
+            let Some(value) = target_value(ctx, d) else { continue };
             let defended = enemies.iter().any(|o| {
-                o.id() != e.id()
+                o.id() != id
                     && o.def().is_some_and(|od| od.is_able_to_move() && od.is_able_to_attack())
-                    && o.pos().distance_2d(e.pos()) < DEFENSE_RADIUS
+                    && o.pos().distance_2d(pos) < DEFENSE_RADIUS
             });
             if defended {
                 continue;
             }
-            if self.dispatched.get(&e.id()).is_some_and(|&f| ctx.frame - f < REDISPATCH_FRAMES) {
+            if self.dispatched.get(&id).is_some_and(|&f| ctx.frame - f < REDISPATCH_FRAMES) {
                 continue;
             }
-            // prefer deeper targets (into enemy territory) — antinukes, heavies
-            let depth_bonus = e.pos().distance_2d(ctx.our_start) * 0.02;
-            if best.as_ref().is_none_or(|(_, v)| value + depth_bonus > *v) {
-                best = Some((*e, value + depth_bonus));
+            // prefer deeper targets (into enemy territory) — antinukes, heavies, jammers
+            let score = value + pos.distance_2d(ctx.our_start) * 0.02;
+            if best.as_ref().is_none_or(|&(_, _, _, s)| score > s) {
+                best = Some((id, d, pos, score));
             }
         }
-        let Some((target, value)) = best else { return };
-        let pos = target.pos();
+        let Some((id, def, pos, value)) = best else { return };
         let mut strike: Vec<Unit> = cb
             .team_units()
             .into_iter()
@@ -106,16 +137,27 @@ impl Sabotage {
         });
         // far targets get a bigger strike
         let n = strike.len().min(if pos.distance_2d(ctx.our_start) > 2000.0 { 6 } else { 4 });
+        // Resolve the unit if the engine still tracks it; otherwise attack the
+        // remembered position (hidden/jammed target).
+        let target = Unit::from_id(cb, id);
         for u in strike.iter().take(n) {
-            u.attack(target, opt::NONE);
+            match target {
+                Some(t) => {
+                    u.attack(t, opt::NONE);
+                }
+                None => {
+                    u.attack_area(pos, 120.0, opt::NONE);
+                }
+            }
         }
-        self.dispatched.insert(target.id(), ctx.frame);
+        self.dispatched.insert(id, ctx.frame);
         cb.log(&format!(
-            "[sabotage] frame={} strike of {n} at {} ({:.0},{:.0}) value={value:.0}",
+            "[sabotage] frame={} strike of {n} at {} ({:.0},{:.0}) value={value:.0}{}",
             ctx.frame,
-            target.def().map(|d| d.name()).unwrap_or_default(),
+            def.name(),
             pos.x,
-            pos.z
+            pos.z,
+            if target.is_some() { "" } else { " (remembered)" }
         ));
     }
 }
