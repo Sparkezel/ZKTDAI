@@ -12,15 +12,19 @@ use crate::territory::Territory;
 
 /// Substrings of internal unit names that mark a static as critical, with a
 /// value score. First match wins (`antinuke` before `nuke`, `heavygeo` before
-/// `geo`). The `factory` entry decays with game time, see `factory_value`.
+/// `geo`, `heavyradar` before `radar`). The nuke silo is the first target; the
+/// radars sit below the singularity — blinding the enemy beats most targets, but
+/// not superweapons. The `factory` entry decays with game time, see
+/// `factory_value`.
 const VALUE_HINTS: &[(&str, f32)] = &[
     ("antinuke", 100.0),
-    ("nuke", 100.0),
-    ("heavygeo", 90.0), // advanced geothermal (energyheavygeo)
-    ("singu", 90.0),    // singularity
+    ("nuke", 110.0),      // strategic nuke silo: first building to be attacked
+    ("heavygeo", 90.0),   // advanced geothermal (energyheavygeo)
+    ("singu", 90.0),      // singularity
+    ("heavyradar", 85.0), // Advanced Radar (staticheavyradar)
+    ("radar", 80.0),      // Radar Tower (staticradar)
     ("fusion", 70.0),
     ("geo", 60.0), // geothermal
-    ("radar", 100.0),
     ("factory", 90.0),
     ("mex", 30.0),
     ("storage", 20.0),
