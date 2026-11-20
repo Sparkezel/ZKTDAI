@@ -25,6 +25,9 @@ pub struct Opts {
     pub sabotage: bool,
     /// Porc may spend at most this fraction of metal income per window.
     pub porc_budget_pct: f32,
+    /// Army share of normal-priority income per window (normal bucket; greedy
+    /// below 10 m/s).
+    pub army_share: f32,
     /// Metal reserve floor at game start (grows with storage afterwards).
     pub reserve_metal: f32,
     /// Desired metal stockpile (1500 + 300 headroom by default).
@@ -88,6 +91,7 @@ impl SkirmishAi for Zktdai {
             porc: bool_opt(cb, "porc", true),
             sabotage: bool_opt(cb, "sabotage", true),
             porc_budget_pct: cb.option("porc_budget_pct").and_then(|v| v.parse().ok()).unwrap_or(20.0) / 100.0,
+            army_share: cb.option("army_share").and_then(|v| v.parse().ok()).unwrap_or(0.6),
             reserve_metal: cb.option("reserve_metal").and_then(|v| v.parse().ok()).unwrap_or(0.0),
             stockpile_metal: cb.option("stockpile_metal").and_then(|v| v.parse().ok()).unwrap_or(1800.0),
             strategy: cb.option("strategy").filter(|s| !s.is_empty()).unwrap_or_else(|| {
@@ -101,6 +105,7 @@ impl SkirmishAi for Zktdai {
             cb,
             WarChestOpts {
                 porc_cap_pct: opts.porc_budget_pct,
+                army_share: opts.army_share,
                 stockpile_target: opts.stockpile_metal,
                 reserve_metal_start: opts.reserve_metal,
                 strategy: opts.strategy.clone(),
@@ -298,7 +303,7 @@ impl Zktdai {
                 &self.war,
                 &self.fob.mobile,
             ),
-            Role::Factory => self.army.factory_idle(&self.ctx, unit, &self.roles, &self.war),
+            Role::Factory => self.army.factory_idle(&self.ctx, unit, &self.roles, &mut self.war),
             r if r.is_combat() || r.is_scout() => {
                 let push = self.army.push_ready(&self.ctx, &self.roles) || self.army.all_in(&self.ctx);
                 self.army.combat_idle(&self.ctx, unit, r, &self.terr, push, self.fob.pos);

@@ -5,11 +5,12 @@
 //! storage is the buffer that lets us sacrifice current strength for flexibility.
 //! So the ledger has two gates:
 //!
-//! - *Flow* (porc and other continuous spending): capped at a fraction of metal
-//!   income per 300-frame window, so storage does not drain.
-//! - *Burst* (strategic projects): may spend `current − reserve − reservations`,
-//!   i.e. draw storage down to the reserve floor. A reserve floor (growing with
-//!   storage) is the only hard constraint.
+//! - *High-priority bucket* (mexes, radar, efficient energy, special projects):
+//!   only constrained by the reserve floor — may spend
+//!   `current − reserve − reservations`, i.e. draw storage down to the floor.
+//! - *Normal bucket* (army production, porc): capped per 300-frame window at a
+//!   fraction of metal income (`army_share`, default 60% but greedy below 10 m/s;
+//!   `porc_cap_pct`), so the remaining normal share floats as reserve.
 //!
 //! High-priority projects additionally set ZK's construction priority
 //! (cmd 34220, state 2 = High) on their builder when the build starts, so the
@@ -30,6 +31,7 @@ use crate::defs::cmd;
 #[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProjectKind {
+    Army,
     Porc,
     Energy,
     Expansion,
@@ -41,8 +43,16 @@ pub enum ProjectKind {
 }
 
 impl ProjectKind {
+    /// High-priority bucket: mexes, radar, efficient energy, special projects.
+    /// Only floor-constrained (no per-window income cap). Army and Porc are the
+    /// normal bucket and get per-window caps.
+    pub fn is_high_priority(self) -> bool {
+        !matches!(self, ProjectKind::Army | ProjectKind::Porc)
+    }
+
     fn tag(self) -> &'static str {
         match self {
+            ProjectKind::Army => "army",
             ProjectKind::Porc => "porc",
             ProjectKind::Energy => "energy",
             ProjectKind::Expansion => "expansion",
@@ -93,8 +103,10 @@ pub struct Project {
     pub since: i32,
 }
 
-/// Frames in one porc spend window.
-const PORC_WINDOW: i32 = 300;
+/// Frames in one spend window (army + porc caps are per window).
+const SPEND_WINDOW: i32 = 300;
+/// Below this metal income the army may take the whole normal share (greedy opening).
+const EARLY_INCOME: f32 = 10.0;
 
 // energy/reserve_energy are for the nuke project (#16).
 #[allow(dead_code)]
@@ -110,19 +122,24 @@ pub struct WarChest {
     pub reserve_energy: f32,
     /// Porc may spend at most this fraction of metal income per window.
     pub porc_cap_pct: f32,
+    /// Army production may spend at most this fraction of metal income per
+    /// window (normal bucket; greedy = 100% below EARLY_INCOME m/s).
+    pub army_share: f32,
     /// Desired metal stockpile (plus headroom).
     pub stockpile_target: f32,
     pub projects: Vec<Project>,
     /// Builders we set to High construction priority (cmd 34220 state 2).
     priority_units: HashSet<i32>,
     porc_spent: f32,
-    porc_window_start: i32,
+    army_spent: f32,
+    window_start: i32,
     /// Strategy profile chosen at game start (option `strategy`, or seeded random).
     pub strategy: String,
 }
 
 pub struct WarChestOpts {
     pub porc_cap_pct: f32,
+    pub army_share: f32,
     pub stockpile_target: f32,
     pub reserve_metal_start: f32,
     pub strategy: String,
@@ -138,11 +155,13 @@ impl WarChest {
             base_storage: 0.0,
             reserve_energy: 0.0,
             porc_cap_pct: opts.porc_cap_pct,
+            army_share: opts.army_share,
             stockpile_target: opts.stockpile_target,
             projects: Vec::new(),
             priority_units: HashSet::new(),
             porc_spent: 0.0,
-            porc_window_start: 0,
+            army_spent: 0.0,
+            window_start: 0,
             strategy: opts.strategy,
         }
     }
@@ -172,18 +191,34 @@ impl WarChest {
     }
 
     /// Whether `amount` of metal may be spent on `kind` right now (reserve floor
-    /// plus, for porc, the per-window income cap).
+    /// plus, for the normal bucket, the per-window income cap).
     pub fn can_spend(&self, ctx: &Ctx, kind: ProjectKind, amount: f32) -> bool {
         if amount > self.spendable(ctx) {
             return false;
         }
-        if kind == ProjectKind::Porc {
-            let cap = self.porc_cap_pct * self.income_metal(ctx) * PORC_WINDOW as f32 / 30.0;
-            if self.porc_spent + amount > cap.max(1.0) {
-                return false;
-            }
+        if !kind.is_high_priority()
+            && let Some((spent, cap)) = self.window_cap(ctx, kind)
+            && spent + amount > cap.max(1.0)
+        {
+            return false;
         }
         true
+    }
+
+    /// Per-window income cap for the normal bucket (army, porc); `None` for the
+    /// high-priority bucket, which is only floor-constrained. The army is greedy
+    /// in the opening: below `EARLY_INCOME` m/s it may take the whole normal share.
+    fn window_cap(&self, ctx: &Ctx, kind: ProjectKind) -> Option<(f32, f32)> {
+        let income = self.income_metal(ctx);
+        let window = SPEND_WINDOW as f32 / 30.0;
+        match kind {
+            ProjectKind::Porc => Some((self.porc_spent, self.porc_cap_pct * income * window)),
+            ProjectKind::Army => {
+                let share = if income < EARLY_INCOME { 1.0 } else { self.army_share };
+                Some((self.army_spent, share * income * window))
+            }
+            _ => None,
+        }
     }
 
     /// Reserve metal for a new project. Returns false if the ledger can't afford it.
@@ -326,9 +361,10 @@ impl WarChest {
         self.reserve_metal = (0.1 * (storage - self.base_storage).max(0.0)).clamp(lo, self.stockpile_target);
         // Drop priority flags of builders that died.
         self.priority_units.retain(|id| Unit::from_id(ctx.cb, *id).is_some());
-        if ctx.frame - self.porc_window_start >= PORC_WINDOW {
-            self.porc_window_start = ctx.frame;
+        if ctx.frame - self.window_start >= SPEND_WINDOW {
+            self.window_start = ctx.frame;
             self.porc_spent = 0.0;
+            self.army_spent = 0.0;
         }
         // A queued project whose build never started (no free builder) releases
         // its reservation after 100 s instead of locking the metal forever.
@@ -344,21 +380,27 @@ impl WarChest {
             .retain(|p| !(matches!(p.state, ProjectState::Done | ProjectState::Failed) && ctx.frame - p.since > 36000));
         if ctx.frame % 900 == 0 {
             ctx.cb.log(&format!(
-                "[war_chest] frame={} metal={:.0} income={:.1} reserve={:.0} spendable={:.0} strategy={} projects=[{}]",
+                "[war_chest] frame={} metal={:.0} income={:.1} reserve={:.0} spendable={:.0} porc_spent={:.0} army_spent={:.0} strategy={} projects=[{}]",
                 ctx.frame,
                 self.current_metal(ctx),
                 self.income_metal(ctx),
                 self.reserve_metal,
                 self.spendable(ctx),
+                self.porc_spent,
+                self.army_spent,
                 self.strategy,
                 self.projects.iter().map(|p| format!("{}:{}", p.name, p.state.tag())).collect::<Vec<_>>().join(",")
             ));
         }
     }
 
-    /// Note porc spending so the per-window cap holds.
-    pub fn note_porc_spend(&mut self, amount: f32) {
-        self.porc_spent += amount;
+    /// Note normal-bucket spending so the per-window cap holds.
+    pub fn note_spend(&mut self, kind: ProjectKind, amount: f32) {
+        match kind {
+            ProjectKind::Porc => self.porc_spent += amount,
+            ProjectKind::Army => self.army_spent += amount,
+            _ => {}
+        }
     }
 
     /// JSON status for the operator widget / infolog (issue #14 wires transport).
@@ -378,13 +420,16 @@ impl WarChest {
             })
             .collect();
         format!(
-            "{{\"frame\":{},\"metal\":{:.0},\"income\":{:.1},\"reserve\":{:.0},\"spendable\":{:.0},\"porc_cap\":{:.2},\"stockpile\":{:.0},\"strategy\":\"{}\",\"projects\":[{}]}}",
+            "{{\"frame\":{},\"metal\":{:.0},\"income\":{:.1},\"reserve\":{:.0},\"spendable\":{:.0},\"porc_cap\":{:.2},\"army_share\":{:.2},\"army_spent\":{:.0},\"porc_spent\":{:.0},\"stockpile\":{:.0},\"strategy\":\"{}\",\"projects\":[{}]}}",
             ctx.frame,
             self.current_metal(ctx),
             self.income_metal(ctx),
             self.reserve_metal,
             self.spendable(ctx),
             self.porc_cap_pct,
+            self.army_share,
+            self.army_spent,
+            self.porc_spent,
             self.stockpile_target,
             self.strategy,
             projects.join(",")

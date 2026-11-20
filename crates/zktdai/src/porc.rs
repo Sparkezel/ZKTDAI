@@ -115,7 +115,7 @@ impl Porc {
                 {
                     let y = cb.map().elevation_at(site.x, site.z);
                     if builder.build(def, Vec3::new(site.x, y, site.z), 0, opt::NONE) {
-                        war.note_porc_spend(cost);
+                        war.note_spend(ProjectKind::Porc, cost);
                         cb.log(&format!(
                             "[porc] frame={} {} at ({:.0},{:.0}) tier={tier}",
                             ctx.frame,
@@ -144,7 +144,7 @@ impl Porc {
                 && let Some(builder) = idle_worker_near(ctx, roles, ctx.our_start, 800.0)
                 && build_at(cb, builder, aa, ctx.our_start, 300.0)
             {
-                war.note_porc_spend(cost);
+                war.note_spend(ProjectKind::Porc, cost);
             }
             self.next_aa = ctx.frame + 900;
         }

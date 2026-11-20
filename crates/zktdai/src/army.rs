@@ -68,7 +68,7 @@ impl Army {
 
     /// A factory that just went idle builds the next unit of the mix — unless
     /// a big energy project (first fusion) is active and production is paused.
-    pub fn factory_idle(&mut self, ctx: &Ctx, factory: Unit, roles: &HashMap<i32, Role>, war: &WarChest) {
+    pub fn factory_idle(&mut self, ctx: &Ctx, factory: Unit, roles: &HashMap<i32, Role>, war: &mut WarChest) {
         // pause production only for the big energy push (first fusion, bump >= 0.5)
         if war
             .projects
@@ -91,11 +91,19 @@ impl Army {
             return;
         }
         let Some(def) = self.next_unit(ctx) else { return };
-        if cb.economy().current(metal) < def.cost(metal) {
+        let cost = def.cost(metal);
+        if cb.economy().current(metal) < cost {
+            return;
+        }
+        // normal bucket: army production is capped at `army_share` of income per
+        // window (greedy below 10 m/s); the rest floats as reserve or feeds porc
+        if !war.can_spend(ctx, ProjectKind::Army, cost) {
             return;
         }
         let pos = factory.pos();
-        factory.build(def, pos, 0, opt::NONE);
+        if factory.build(def, pos, 0, opt::NONE) {
+            war.note_spend(ProjectKind::Army, cost);
+        }
     }
 
     /// Production weights per 100 builds: raiders dominate the opening

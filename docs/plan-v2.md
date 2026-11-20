@@ -260,16 +260,21 @@ since bigger maps scale faster): opening ~6, mid ~40, endgame ~80 on small maps.
 One module, `crates/zktdai/src/war_chest.rs`, owns all spending decisions for metal and
 energy. No other module reads `economy.current` to decide spending; they ask the ledger.
 
-State: `reserve_metal` (floor — never spend below `current − reserve`; starts at ~10% of
-starting capacity ≈ 50 and grows with the economy, e.g. `clamp(0.1 × storage, 50, …)`),
-`reserve_energy` (for nuke/overdrive bursts), `porc_cap_pct` (porc may spend at most
-this × income per window), `stockpile_target` (1500 + 300 headroom), and
+State: `reserve_metal` (floor — never spend below `current − reserve`; starts at the
+`reserve_metal` option, default 0, and grows as `clamp(0.1 × (storage − starting storage),
+reserve_metal, stockpile_target)`), `reserve_energy` (for nuke/overdrive bursts),
+`porc_cap_pct` + `army_share` (normal bucket: porc and army production are each capped
+per 300-frame window at their share × metal income; the army share is greedy = 100%
+below 10 m/s), `stockpile_target` (1500 + 300 headroom), and
 `projects: Vec<Project>` where `Project { name, kind, state: Queued|Active|Done|Failed,
-budget_bump, reserved, target_unit, started_frame }`.
+budget_bump, reserved, target_unit, started_frame }`. Kinds split into two buckets:
+high-priority (mexes/radar/efficient energy/special projects — only floor-constrained,
+no window cap) vs normal (army, porc — window-capped, remainder floats as reserve).
 
 API: `update(ctx)` every ~30 frames (reads current/income/usage/storage for both
 resources, ages projects, releases reservations on completion); `can_spend(kind, amount)`
-= `current − reserve − Σ reserved ≥ amount` and per-kind cap check; `request_project(…)`
+= `current − reserve − Σ reserved ≥ amount` plus the per-window cap for normal-bucket
+kinds; `note_spend(kind, amount)` records normal-bucket spending; `request_project(…)`
 reserves the cost and activates when a builder starts (`UnitCreated` with builder);
 priority when metal is scarce: survival porc > army floor > stockpile top-up > active
 project (with its `budget_bump`) > queued projects in profile order (nuke after 2–3

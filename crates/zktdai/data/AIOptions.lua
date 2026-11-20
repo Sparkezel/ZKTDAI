@@ -58,6 +58,16 @@ local options = {
 		step   = 5,
 	},
 	{
+		key    = 'army_share',
+		name   = 'Army share of normal income',
+		desc   = 'Per-window cap on army production as a fraction of metal income (normal bucket); below 10 m/s the AI may spend all of it (greedy opening). Mexes, radar, efficient energy and special projects form the high-priority bucket, limited only by the reserve floor.',
+		type   = 'number',
+		def    = 0.6,
+		min    = 0,
+		max    = 1,
+		step   = 0.05,
+	},
+	{
 		key    = 'reserve_metal',
 		name   = 'Metal reserve floor',
 		desc   = 'Metal kept unspent at game start (0 = nothing reserved); the floor grows with storage above the starting capacity afterwards.',

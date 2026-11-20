@@ -148,7 +148,7 @@ impl Fob {
                 && let Some(w) = idle_worker_near(cb, roles, pos, 1200.0)
                 && build_at(cb, w, ca, pos, 250.0)
             {
-                war.note_porc_spend(cost);
+                war.note_spend(ProjectKind::Porc, cost);
                 cb.log(&format!("[fob] frame={} caretaker at base ({:.0},{:.0})", ctx.frame, pos.x, pos.z));
             }
         }
@@ -193,7 +193,7 @@ impl Fob {
                     && let Some(w) = idle_worker_near(cb, roles, p.pos, 1200.0)
                     && build_at(cb, w, p.def, p.pos, 120.0)
                 {
-                    war.note_porc_spend(cost);
+                    war.note_spend(ProjectKind::Porc, cost);
                     cb.log(&format!(
                         "[fob] frame={} {} placed in pit at ({:.0},{:.0}) after {:.0}/{:.0} dug",
                         ctx.frame, p.kind, p.pos.x, p.pos.z, dug, p.depth
