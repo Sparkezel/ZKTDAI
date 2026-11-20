@@ -283,6 +283,28 @@ Failed (release reservation), `CommandFinished` → Done. Every 30 s log
 `[war_chest] current=… income=… reserve=… projects=[…]` and expose `status_json()` for
 the operator widget. Strategy profile picked at Init from a seeded RNG, logged.
 
+## Construction planner (`planner.rs`)
+
+Grows the constructor corps from the factories (`wanted_cons` = 1 energy + 1 base +
+up to 3 expansion + reclaim pool growing with income, cap 10) and assigns every
+constructor a `ConJob`:
+
+- **Energy** — always High construction priority (cmd 34220 state 2), grids
+  wind/solar (whichever is more efficient) near the base, solar backup below 80%
+  energy parity.
+- **Base** — holds the base; from mid game (income ≥ 30 or 15k frames) builds the
+  air factory (build-option expansion is v0.3, #18).
+- **Expand** — up to 3 cons beeline to untaken mexes, escorted by up to 3 idle
+  raiders (or 1 skirm/riot), secure each cluster with a lotus (+ picket past the
+  3rd cluster or 14 total mexes). Turret placement itself stays with porc.
+- **Reclaim** — solo wreck-clearing early; from mid game pooled into taskgroups of
+  3 on the front line (defense-build / turret-reclaim / maintenance objectives are
+  phase 3, #15).
+
+Big plans: checked once a minute once the first fusion / advanced geo is online —
+rotating Lucifer → Desolator → Cerberus → missile silo → Bertha at the front line as
+High-priority projects. `worker_idle` is the fallback for unassigned workers.
+
 ## Adversarial review — round 3
 
 - Random strategies hurt benchmark comparability → pin via option/logged seed; only

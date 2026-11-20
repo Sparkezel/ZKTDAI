@@ -68,7 +68,14 @@ impl Army {
 
     /// A factory that just went idle builds the next unit of the mix — unless
     /// a big energy project (first fusion) is active and production is paused.
-    pub fn factory_idle(&mut self, ctx: &Ctx, factory: Unit, roles: &HashMap<i32, Role>, war: &mut WarChest) {
+    pub fn factory_idle(
+        &mut self,
+        ctx: &Ctx,
+        factory: Unit,
+        roles: &HashMap<i32, Role>,
+        war: &mut WarChest,
+        want_cons: usize,
+    ) {
         // pause production only for the big energy push (first fusion, bump >= 0.5)
         if war
             .projects
@@ -79,11 +86,14 @@ impl Army {
         }
         let cb = ctx.cb;
         let Some(metal) = ctx.metal else { return };
-        // opening: the first factory builds the first constructor (only
-        // factories/plates/athena/engineer-com can build cons, and only after
-        // a factory is placed — the first factory is free)
-        if !roles.values().any(|r| *r == Role::Worker)
+        // constructors: the planner decides how many we want (energy / base /
+        // expansion / reclaim jobs). Only factories/plates/athena/engineer-com
+        // can build cons, and only after a factory is placed (first is free).
+        let workers =
+            cb.team_units().iter().filter(|u| roles.get(&u.id()) == Some(&Role::Worker) && !u.is_being_built()).count();
+        if workers < want_cons
             && let Some(con) = ctx.defs.con
+            && war.can_spend(ctx, ProjectKind::Expansion, con.cost(metal))
             && cb.economy().current(metal) >= con.cost(metal)
         {
             let pos = factory.pos();

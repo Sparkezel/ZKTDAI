@@ -9,6 +9,7 @@ use crate::defs::{Defs, Role, cmd};
 use crate::economy::Economy;
 use crate::fob::Fob;
 use crate::fortify::Fortify;
+use crate::planner::Planner;
 use crate::porc::Porc;
 use crate::sabotage::Sabotage;
 use crate::territory::Territory;
@@ -72,6 +73,7 @@ pub struct Zktdai {
     porc: Porc,
     sab: Sabotage,
     army: Army,
+    planner: Planner,
     war: WarChest,
 }
 
@@ -138,6 +140,7 @@ impl SkirmishAi for Zktdai {
             porc: Porc::new(),
             sab: Sabotage::new(),
             army: Army::new(),
+            planner: Planner::new(),
             war,
         }
     }
@@ -204,6 +207,14 @@ impl SkirmishAi for Zktdai {
                     self.fob.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
                     self.eco.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
                     self.army.update(&self.ctx, &self.roles, &self.terr);
+                    self.planner.update(
+                        &self.ctx,
+                        &self.roles,
+                        &self.terr,
+                        &mut self.ordered_spots,
+                        &mut self.war,
+                        &self.fob.mobile,
+                    );
                 }
             }
             Event::UnitCreated { unit, builder } => {
@@ -225,6 +236,9 @@ impl SkirmishAi for Zktdai {
             Event::UnitIdle { unit } => self.unit_idle(unit),
             Event::UnitDestroyed { unit, .. } => {
                 self.war.on_unit_destroyed(&self.ctx, unit);
+                if self.ctx.metal.is_some_and(|m| unit.def().is_some_and(|d| d.cost(m) >= 50.0)) {
+                    self.planner.note_wreck(unit.pos());
+                }
                 self.roles.remove(&unit.id());
             }
             Event::UnitGiven { unit, new_team, .. } | Event::UnitCaptured { unit, new_team, .. } => {
@@ -234,7 +248,12 @@ impl SkirmishAi for Zktdai {
                     self.roles.remove(&unit.id());
                 }
             }
-            Event::EnemyDestroyed { enemy, .. } => self.sab.forget(enemy.id()),
+            Event::EnemyDestroyed { enemy, .. } => {
+                self.sab.forget(enemy.id());
+                if self.ctx.metal.is_some_and(|m| enemy.def().is_some_and(|d| d.cost(m) >= 50.0)) {
+                    self.planner.note_wreck(enemy.pos());
+                }
+            }
             Event::EnemyEnterLos { enemy } | Event::EnemyCreated { enemy } | Event::EnemyFinished { enemy } => {
                 self.army.note_enemy(&self.ctx, enemy);
             }
@@ -302,8 +321,12 @@ impl Zktdai {
                 &mut self.terr,
                 &self.war,
                 &self.fob.mobile,
+                &self.planner,
             ),
-            Role::Factory => self.army.factory_idle(&self.ctx, unit, &self.roles, &mut self.war),
+            Role::Factory => {
+                let want = self.planner.wanted_cons(&self.ctx, &self.terr);
+                self.army.factory_idle(&self.ctx, unit, &self.roles, &mut self.war, want);
+            }
             r if r.is_combat() || r.is_scout() => {
                 let push = self.army.push_ready(&self.ctx, &self.roles) || self.army.all_in(&self.ctx);
                 self.army.combat_idle(&self.ctx, unit, r, &self.terr, push, self.fob.pos);

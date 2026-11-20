@@ -10,6 +10,7 @@ use springai::{Callback, Unit, UnitDef, Vec3, opt};
 
 use crate::ai::Ctx;
 use crate::defs::Role;
+use crate::planner::Planner;
 use crate::territory::Territory;
 use crate::war_chest::{ProjectKind, WarChest};
 
@@ -27,13 +28,13 @@ fn current_metal(ctx: &Ctx) -> f32 {
     ctx.metal.map(|m| ctx.cb.economy().current(m)).unwrap_or(0.0)
 }
 
-fn metal_cost(ctx: &Ctx, def: UnitDef) -> f32 {
+pub fn metal_cost(ctx: &Ctx, def: UnitDef) -> f32 {
     ctx.defs.metal().map(|m| def.cost(m)).unwrap_or(f32::MAX)
 }
 
 /// A static power plant to build when energy is short. Wind only on maps with
 /// enough wind (>= 0.6 of the 2.5 cap), otherwise solar.
-fn power_def(ctx: &Ctx) -> Option<UnitDef> {
+pub fn power_def(ctx: &Ctx) -> Option<UnitDef> {
     let fallback = || ctx.defs.get("energywind");
     if ctx.wind_max >= 0.6 * 2.5 {
         ctx.defs.wind.or(ctx.defs.solar).or_else(fallback)
@@ -42,7 +43,7 @@ fn power_def(ctx: &Ctx) -> Option<UnitDef> {
     }
 }
 
-fn wants_energy(ctx: &Ctx) -> bool {
+pub fn wants_energy(ctx: &Ctx) -> bool {
     let Some(energy) = ctx.energy else { return false };
     let eco = ctx.cb.economy();
     eco.income(energy) < eco.usage(energy) + 2.0
@@ -244,6 +245,7 @@ impl Economy {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn worker_idle(
         &mut self,
         ctx: &Ctx,
@@ -252,6 +254,7 @@ impl Economy {
         terr: &mut Territory,
         war: &WarChest,
         fob_mobile: &HashSet<i32>,
+        planner: &Planner,
     ) {
         let cb = ctx.cb;
         if ctx.metal.is_none() {
@@ -259,6 +262,11 @@ impl Economy {
         }
         // constructors assigned to the forward base hold it instead
         if fob_mobile.contains(&unit.id()) {
+            return;
+        }
+        // constructors with a planner job (energy/base/expand/reclaim) are run
+        // by the planner; this is the fallback for unassigned workers
+        if planner.has_job(unit.id()) {
             return;
         }
         let Some(mex) = ctx.defs.mex else { return };
