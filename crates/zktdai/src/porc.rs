@@ -19,6 +19,9 @@ use crate::war_chest::{ProjectKind, WarChest};
 const DECON_QUIET_FRAMES: i32 = 18000;
 /// How far behind the front (toward our side) a turret must be to decon.
 const DECON_BEHIND_FRONT: f32 = 300.0;
+/// Turrets within this range of a critical structure are point defense and are
+/// never deconned. AA towers are never deconned either.
+const PROTECT_RADIUS: f32 = 600.0;
 
 pub struct Porc {
     next_turret: i32,
@@ -247,16 +250,29 @@ impl Porc {
     }
 
     /// Reclaim our turrets that have seen no combat for a long time and sit
-    /// behind the current front.
+    /// behind the current front. AA towers and turrets guarding critical
+    /// structures are exempt.
     fn decon(&mut self, ctx: &Ctx, roles: &HashMap<i32, Role>, terr: &Territory) {
         let cb = ctx.cb;
         let dir = terr.enemy_centroid - terr.our_centroid;
         let len = dir.length_2d().max(1.0);
         let toward_us = dir * (-1.0 / len);
+        let protected: Vec<Vec3> = cb
+            .team_units()
+            .iter()
+            .filter(|u| u.def().is_some_and(|d| ctx.defs.is_critical_static(d)))
+            .map(|u| u.pos())
+            .collect();
         let mut doomed = Vec::new();
         for u in cb.team_units() {
             let Some(d) = u.def() else { continue };
             if d.is_able_to_move() || !d.is_able_to_attack() {
+                continue;
+            }
+            if ctx.defs.is_aa_tower(d) {
+                continue;
+            }
+            if protected.iter().any(|p| u.pos().distance_2d(*p) < PROTECT_RADIUS) {
                 continue;
             }
             let quiet = ctx.frame - self.last_combat.get(&u.id()).copied().unwrap_or(0) > DECON_QUIET_FRAMES;
