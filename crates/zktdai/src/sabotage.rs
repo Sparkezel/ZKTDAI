@@ -149,7 +149,14 @@ impl Sabotage {
         let mut strike: Vec<Unit> = cb
             .team_units()
             .into_iter()
-            .filter(|u| roles.get(&u.id()).is_some_and(|r| r.is_combat()) && u.num_current_commands() == 0)
+            // sabotage strikes are fast mobile ground only: raiders, skirmishers and
+            // assaults faster than 60 elmo/s. No artillery (it shells such positions
+            // from afar) and no air for now.
+            .filter(|u| {
+                roles.get(&u.id()).is_some_and(|r| matches!(r, Role::Raider | Role::Skirm | Role::Assault))
+                    && u.num_current_commands() == 0
+                    && u.def().is_some_and(|d| d.speed() > 60.0)
+            })
             .collect();
         strike.sort_by(|a, b| {
             a.pos().distance_2d(pos).partial_cmp(&b.pos().distance_2d(pos)).unwrap_or(std::cmp::Ordering::Equal)
