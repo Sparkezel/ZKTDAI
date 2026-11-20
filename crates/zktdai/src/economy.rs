@@ -48,10 +48,15 @@ fn wants_energy(ctx: &Ctx) -> bool {
     eco.income(energy) < eco.usage(energy) + 2.0
 }
 
-/// The scripted opening.
+/// The scripted opening: the free factory first (constructors can only be
+/// built by factories/plates/athena/engineer-commander, gated behind placing a
+/// factory — the first factory is free), then the factory builds the first
+/// constructor while the commander assists it, then commander + constructor
+/// build the 3 home mexes in tandem, then the wind grid linking them and 2
+/// solars.
 enum Opening {
-    Con,
     Factory,
+    Con,
     Mexes,
     WindGrid,
     Solars,
@@ -64,11 +69,19 @@ pub struct Economy {
     opening_mexes: Vec<usize>,
     wind_built: usize,
     solars_built: usize,
+    /// The single home lotus (near factory/mexes) is built once.
+    lotus_built: bool,
 }
 
 impl Economy {
     pub fn new() -> Self {
-        Economy { opening: Opening::Con, opening_mexes: Vec::new(), wind_built: 0, solars_built: 0 }
+        Economy {
+            opening: Opening::Factory,
+            opening_mexes: Vec::new(),
+            wind_built: 0,
+            solars_built: 0,
+            lotus_built: false,
+        }
     }
 
     pub fn commander_idle(
@@ -86,21 +99,13 @@ impl Economy {
         }
         let cur = current_metal(ctx);
         match self.opening {
-            Opening::Con => {
-                if let Some(con) = ctx.defs.con {
-                    if cur >= metal_cost(ctx, con) && build_at(cb, unit, con, ctx.our_start, 300.0) {
-                        self.opening = Opening::Factory;
-                    }
-                } else {
-                    self.opening = Opening::Factory;
-                }
-            }
             Opening::Factory => {
                 if let Some(f) = ctx.defs.factory {
                     if war.can_spend(ctx, ProjectKind::Expansion, metal_cost(ctx, f))
+                        && cur >= metal_cost(ctx, f)
                         && build_at(cb, unit, f, ctx.our_start, 400.0)
                     {
-                        // capture the 3 surrounding mexes next
+                        // capture the 3 surrounding mexes for the wind grid
                         let mut spots: Vec<usize> =
                             (0..ctx.spots.len()).filter(|i| !terr.owned[*i] && !terr.enemy[*i]).collect();
                         spots.sort_by(|a, b| {
@@ -110,27 +115,43 @@ impl Economy {
                                 .unwrap_or(std::cmp::Ordering::Equal)
                         });
                         self.opening_mexes = spots.into_iter().take(3).collect();
-                        self.opening = Opening::Mexes;
+                        self.opening = Opening::Con;
                     }
                 } else {
-                    self.opening = Opening::Mexes;
+                    self.opening = Opening::Con;
                 }
+                return;
+            }
+            Opening::Con => {
+                // the factory builds the first con; the commander assists it
+                if roles.values().any(|r| *r == Role::Worker) {
+                    self.opening = Opening::Mexes;
+                    return;
+                }
+                if let Some(con) = ctx.defs.con
+                    && let Some(nano) = cb.team_units().into_iter().find(|u| u.def() == Some(con) && u.is_being_built())
+                {
+                    unit.guard(nano, opt::NONE);
+                }
+                return;
             }
             Opening::Mexes => {
                 let Some(mex) = ctx.defs.mex else {
                     self.opening = Opening::WindGrid;
                     return;
                 };
-                let next = self.opening_mexes.iter().copied().find(|i| !ordered.contains(i) && !terr.owned[*i]);
-                match next {
-                    None => self.opening = Opening::WindGrid,
-                    Some(i) => {
-                        // stay in Mexes while we cannot afford it yet
-                        if cur >= metal_cost(ctx, mex) && build_at(cb, unit, mex, ctx.spots[i], 128.0) {
-                            ordered.insert(i);
-                        }
-                    }
+                if self.opening_mexes.iter().all(|i| ordered.contains(i) || terr.owned[*i]) {
+                    self.opening = Opening::WindGrid;
+                    return;
                 }
+                // tandem: workers take the same spots via expansion_spot
+                if let Some(i) = self.opening_mexes.iter().copied().find(|i| !ordered.contains(i) && !terr.owned[*i])
+                    && cur >= metal_cost(ctx, mex)
+                    && build_at(cb, unit, mex, ctx.spots[i], 128.0)
+                {
+                    ordered.insert(i);
+                }
+                return;
             }
             Opening::WindGrid => {
                 // 6 turbines linking the surrounding mexes, only on windy maps
@@ -165,7 +186,22 @@ impl Economy {
             }
             Opening::Done => {}
         }
-        // steady-state commander: expansion, energy, factory rebuild
+        // steady-state commander: one home lotus near the factory/mexes
+        // (porc-gated, built once), then expansion, energy, factory rebuild
+        if !self.lotus_built
+            && let Some(lotus) = ctx.defs.turret_ladder.first().copied()
+        {
+            let already =
+                cb.team_units().iter().any(|u| u.def() == Some(lotus) && u.pos().distance_2d(ctx.our_start) < 600.0);
+            let built = !already
+                && war.can_spend(ctx, ProjectKind::Porc, metal_cost(ctx, lotus))
+                && cur >= metal_cost(ctx, lotus)
+                && build_at(cb, unit, lotus, ctx.our_start, 400.0);
+            if already || built {
+                self.lotus_built = true;
+                return;
+            }
+        }
         if let Some(mex) = ctx.defs.mex
             && let Some(i) = terr.expansion_spot(ctx, ordered)
             && war.can_spend(ctx, ProjectKind::Expansion, metal_cost(ctx, mex))
@@ -174,6 +210,21 @@ impl Economy {
         {
             ordered.insert(i);
             return;
+        }
+        // solar backup when below 80% energy parity (income < 0.8 * usage)
+        if let Some(energy) = ctx.energy
+            && let Some(solar) = ctx.defs.solar
+        {
+            let eco = cb.economy();
+            let usage = eco.usage(energy);
+            if usage > 0.0
+                && eco.income(energy) < 0.8 * usage
+                && war.can_spend(ctx, ProjectKind::Energy, metal_cost(ctx, solar))
+                && cur >= metal_cost(ctx, solar)
+                && build_at(cb, unit, solar, ctx.our_start, 300.0)
+            {
+                return;
+            }
         }
         if wants_energy(ctx)
             && let Some(power) = power_def(ctx)
@@ -248,10 +299,25 @@ impl Economy {
                         || p.state == crate::war_chest::ProjectState::Active)
             })
         };
-        // storages to reach the stockpile target
-        let storage = cb.economy().storage(metal);
+        // storages are conditional: one per 35 m/s income milestone (cap 4),
+        // plus one immediately if the commander is dead
+        let commander_alive = roles.values().any(|r| *r == Role::Commander);
+        let milestones = ((income / 35.0) as usize).min(4);
+        let target = milestones.max(if commander_alive { 0 } else { 1 });
+        let storages = cb.team_units().iter().filter(|u| u.def() == ctx.defs.storage).count()
+            + war
+                .projects
+                .iter()
+                .filter(|p| {
+                    p.kind == ProjectKind::Storage
+                        && matches!(
+                            p.state,
+                            crate::war_chest::ProjectState::Queued | crate::war_chest::ProjectState::Active
+                        )
+                })
+                .count();
         if let Some(s) = ctx.defs.storage
-            && storage < war.stockpile_target
+            && storages < target
             && !has_project(war, ProjectKind::Storage)
         {
             let cost = metal_cost(ctx, s);

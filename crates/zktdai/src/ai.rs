@@ -2,10 +2,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use springai::{Callback, Event, Resource, SkirmishAi, Unit, Vec3, opt};
+use springai::{Callback, Event, NO_TIMEOUT, Resource, SkirmishAi, Unit, Vec3, opt};
 
 use crate::army::Army;
-use crate::defs::{Defs, Role};
+use crate::defs::{Defs, Role, cmd};
 use crate::economy::Economy;
 use crate::fob::Fob;
 use crate::fortify::Fortify;
@@ -88,7 +88,7 @@ impl SkirmishAi for Zktdai {
             porc: bool_opt(cb, "porc", true),
             sabotage: bool_opt(cb, "sabotage", true),
             porc_budget_pct: cb.option("porc_budget_pct").and_then(|v| v.parse().ok()).unwrap_or(20.0) / 100.0,
-            reserve_metal: cb.option("reserve_metal").and_then(|v| v.parse().ok()).unwrap_or(50.0),
+            reserve_metal: cb.option("reserve_metal").and_then(|v| v.parse().ok()).unwrap_or(0.0),
             stockpile_metal: cb.option("stockpile_metal").and_then(|v| v.parse().ok()).unwrap_or(1800.0),
             strategy: cb.option("strategy").filter(|s| !s.is_empty()).unwrap_or_else(|| {
                 const PROFILES: &[&str] = &["balanced", "econ_greedy", "porc_heavy"];
@@ -208,6 +208,13 @@ impl SkirmishAi for Zktdai {
             }
             Event::UnitFinished { unit } => {
                 self.war.on_unit_finished(&self.ctx, unit);
+                // all metal extractors run High priority (cmd 34220 state 2):
+                // they get their metal/overdrive share first
+                if unit.team() == self.ctx.cb.game().my_team()
+                    && unit.def().is_some_and(|d| self.ctx.metal.is_some_and(|m| d.extracts_resource(m) > 0.0))
+                {
+                    unit.execute_custom_command(cmd::PRIORITY, &[2.0], opt::NONE, NO_TIMEOUT);
+                }
                 self.track(unit);
             }
             Event::UnitIdle { unit } => self.unit_idle(unit),
@@ -291,7 +298,7 @@ impl Zktdai {
                 &self.war,
                 &self.fob.mobile,
             ),
-            Role::Factory => self.army.factory_idle(&self.ctx, unit, &self.war),
+            Role::Factory => self.army.factory_idle(&self.ctx, unit, &self.roles, &self.war),
             r if r.is_combat() || r.is_scout() => {
                 let push = self.army.push_ready(&self.ctx, &self.roles) || self.army.all_in(&self.ctx);
                 self.army.combat_idle(&self.ctx, unit, r, &self.terr, push, self.fob.pos);

@@ -60,9 +60,9 @@ local options = {
 	{
 		key    = 'reserve_metal',
 		name   = 'Metal reserve floor',
-		desc   = 'Metal kept unspent at game start (~10% of starting capacity); the floor grows with storage afterwards.',
+		desc   = 'Metal kept unspent at game start (0 = nothing reserved); the floor grows with storage above the starting capacity afterwards.',
 		type   = 'number',
-		def    = 50,
+		def    = 0,
 		min    = 0,
 		max    = 1000,
 		step   = 10,

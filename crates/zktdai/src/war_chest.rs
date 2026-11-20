@@ -104,6 +104,9 @@ pub struct WarChest {
     pub reserve_metal: f32,
     /// The reserve floor requested at game start (option `reserve_metal`).
     reserve_metal_start: f32,
+    /// Storage capacity at game start; the reserve floor grows with storage
+    /// above this base (0 at start = nothing reserved).
+    base_storage: f32,
     pub reserve_energy: f32,
     /// Porc may spend at most this fraction of metal income per window.
     pub porc_cap_pct: f32,
@@ -132,6 +135,7 @@ impl WarChest {
             energy: cb.resource_by_name("Energy"),
             reserve_metal: opts.reserve_metal_start,
             reserve_metal_start: opts.reserve_metal_start,
+            base_storage: 0.0,
             reserve_energy: 0.0,
             porc_cap_pct: opts.porc_cap_pct,
             stockpile_target: opts.stockpile_target,
@@ -310,12 +314,16 @@ impl WarChest {
 
     /// Per-window bookkeeping and the reserve floor; call every ~30 frames.
     pub fn update(&mut self, ctx: &Ctx) {
-        // Reserve floor: ~10% of storage capacity, at least max(50, the reserve
-        // requested at start), never more than the stockpile target. This is the
-        // hard limit for burst spending: storage may be drawn down to it.
+        // Reserve floor: nothing reserved at game start; grows as 10% of storage
+        // capacity above the starting base, at least the requested start value,
+        // never more than the stockpile target. This is the hard limit for burst
+        // spending: storage may be drawn down to it.
         let storage = self.storage_metal(ctx);
-        let lo = self.reserve_metal_start.max(50.0).min(self.stockpile_target); // clamp panics if lo > hi
-        self.reserve_metal = (0.1 * storage).clamp(lo, self.stockpile_target);
+        if self.base_storage <= 0.0 {
+            self.base_storage = storage;
+        }
+        let lo = self.reserve_metal_start.min(self.stockpile_target); // clamp panics if lo > hi
+        self.reserve_metal = (0.1 * (storage - self.base_storage).max(0.0)).clamp(lo, self.stockpile_target);
         // Drop priority flags of builders that died.
         self.priority_units.retain(|id| Unit::from_id(ctx.cb, *id).is_some());
         if ctx.frame - self.porc_window_start >= PORC_WINDOW {

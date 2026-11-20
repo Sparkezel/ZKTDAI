@@ -131,6 +131,8 @@ const FACTORY_NAMES: &[&str] = &[
     "factoryspider",
     "factoryplane",
     "factorygunship",
+    "factorytank",
+    "factoryship",
 ];
 /// Porc ladder by metal cost: Lotus 90, Stardust 220, Gauss 400, Stinger 450,
 /// Desolator 1500, Lucifer 2200 (verified against the Zero-K repo).
