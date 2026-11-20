@@ -1,8 +1,17 @@
 //! The AI root: owns all state and dispatches engine events to the modules.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use springai::{Callback, Event, NO_TIMEOUT, Resource, SkirmishAi, Unit, Vec3, opt};
+
+/// Event-trace logging (set `ZKTDAI_TRACE_EVENTS=1` in the game process env;
+/// used by tools/headless to diagnose event delivery, e.g. the v0.1 idle bug):
+/// log every non-update event plus every 300th update for the first minute.
+fn trace_events() -> bool {
+    static T: OnceLock<bool> = OnceLock::new();
+    *T.get_or_init(|| std::env::var("ZKTDAI_TRACE_EVENTS").is_ok_and(|v| v != "0"))
+}
 
 use crate::army::Army;
 use crate::defs::{Defs, Role, cmd};
@@ -146,6 +155,12 @@ impl SkirmishAi for Zktdai {
     }
 
     fn handle_event(&mut self, event: Event) -> i32 {
+        if trace_events() && self.ctx.frame < 1800 {
+            let name = event.name();
+            if name != "update" || self.ctx.frame % 300 == 0 {
+                self.ctx.cb.log(&format!("[zktdai] event {name} f={}", self.ctx.frame));
+            }
+        }
         match event {
             Event::Init { saved_game } => {
                 let cb = self.ctx.cb;

@@ -1,0 +1,52 @@
+[GAME]
+{
+	GameType = @GAMETYPE@;
+	Map = @MAP@;
+	StartPosType = @STARTPOS@;
+	MaxUnits = @MAXUNITS@;
+
+	[ALLYTEAM0]
+	{
+		NumAllies = 0;
+	}
+
+	[ALLYTEAM1]
+	{
+		NumAllies = 0;
+	}
+
+	[TEAM0]
+	{
+		TeamLeader = 0;
+	}
+
+	[TEAM1]
+	{
+		TeamLeader = 1;
+	}
+
+	[PLAYER0]
+	{
+		Name = Headless;
+		Spectator = 1;
+		Team = 0;
+	}
+
+	[AI0]
+	{
+		Name = @AI_NAME@;
+		ShortName = @AI_SHORT@;
+		Version = @AI_VERSION@;
+		Team = 0;
+		Host = 0;
+	}
+
+	[AI1]
+	{
+		Name = @OPP_NAME@;
+		ShortName = @OPP_SHORT@;
+		Version = @OPP_VERSION@;
+		Team = 1;
+		Host = 0;
+	}
+}
