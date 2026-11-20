@@ -18,6 +18,15 @@ powershell -File tools\headless\run.ps1 -Games 3 -TraceEvents -PostIssue 2
 #   powershell -File tools\headless\run.ps1 -AiZip C:\tmp\zktdai-artifact\ZKTDAI-0.2.0.zip -Games 3
 ```
 
+To use an existing Zero-K install (engine + game + maps) **read-only** — nothing is
+written into the install; the engine runs with `-write-dir <WorkDir>` so the AI copy,
+`script.txt`, `infolog.txt` and `out/` all live in `<WorkDir>` only:
+
+```powershell
+powershell -File tools\headless\run.ps1 -ZkInstall "D:\...\steamapps\common\Zero-K" -Games 1 -TraceEvents
+```
+(`-Opp` auto-falls back to an installed CircuitAI version, e.g. `stable`.)
+
 WSL2 / Linux:
 
 ```bash
@@ -60,10 +69,14 @@ issue via `gh`.
 | `VERSION` / `-Version` | from crates/zktdai/Cargo.toml | AI version directory |
 | `TRACE` / `-TraceEvents` | off | run with `ZKTDAI_TRACE_EVENTS=1`: the AI logs every non-update event (and every 300th update) for the first minute — this tells us whether `unitCreated`/`unitIdle` reach the AI, the key diagnostic for the v0.1 idle game |
 | `STARTPOS` / `-StartPos` | 2 (chosen) | start position mode; AIs send their start via `send_start_position` |
+| `SPEED` / `-Speed` | 1 | sim speed multiplier, written to `[MODOPTIONS] MinSpeed/MaxSpeed` in script.txt (e.g. `10` for 10x; same mechanism as zkgbai's arena `-s`) |
+| `PORT` / `-Port` | 8452 + pid-derived | host UDP port (`IsHost=1; HostIP=127.0.0.1` in script.txt makes the engine self-host; set distinct ports for parallel runs) |
+| `CPUS` / `-CpuMask` | — (engine default) | pin the engine process to its own core(s): `taskset -c` list on Linux (`CPUS=4,5`), hex affinity mask on Windows (`-CpuMask 30`); give each parallel run a distinct port and mask |
 | `MAXUNITS` / `-MaxUnits` | 2000 | per-team unit cap |
 | `TIMEOUT_SEC` / `-TimeoutSec` | 1800 | per-game timeout |
 | `POST_ISSUE` / `-PostIssue` | 0 | gh issue number to comment results on |
 | `EXTRA_ARGS` / `-ExtraArgs` | — | extra args for spring-headless |
+| `ZkInstall` / `-ZkInstall` | — | existing Zero-K install dir; engine/game/map come from it and all writes go to `WorkDir` via `-write-dir` (the install is never modified) |
 
 ## Interpreting results
 

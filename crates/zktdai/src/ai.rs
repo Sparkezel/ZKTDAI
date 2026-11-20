@@ -216,6 +216,32 @@ impl SkirmishAi for Zktdai {
                     let owned = self.terr.owned.clone();
                     self.ordered_spots.retain(|i| !owned[*i]);
                 }
+                // The engine only sends unitIdle when a command *finishes*, so a
+                // unit that never got an order (the opening commander) would wait
+                // forever. Sweep idle constructors/commander/factories periodically
+                // and dispatch the same handler (idempotent: skips units with orders).
+                if frame % 120 == 0 {
+                    let idle: Vec<i32> = self
+                        .ctx
+                        .cb
+                        .team_units()
+                        .into_iter()
+                        .filter(|u| {
+                            !u.is_being_built()
+                                && u.num_current_commands() == 0
+                                && matches!(
+                                    self.roles.get(&u.id()),
+                                    Some(Role::Commander) | Some(Role::Worker) | Some(Role::Factory)
+                                )
+                        })
+                        .map(|u| u.id())
+                        .collect();
+                    for id in idle {
+                        if let Some(u) = Unit::from_id(self.ctx.cb, id) {
+                            self.unit_idle(u);
+                        }
+                    }
+                }
                 if frame % 150 == 0 {
                     self.porc.update(&self.ctx, &self.roles, &self.terr, &self.threat, &mut self.war);
                 }
@@ -255,6 +281,11 @@ impl SkirmishAi for Zktdai {
                     unit.execute_custom_command(cmd::PRIORITY, &[2.0], opt::NONE, NO_TIMEOUT);
                 }
                 self.track(unit);
+                // The engine only sends unitIdle when a *command finishes*
+                // (CommandAI.cpp), never for a unit that had no orders — so a
+                // freshly finished commander/worker/factory would wait forever.
+                // A finished unit is idle: dispatch the same handler.
+                self.unit_idle(unit);
             }
             Event::UnitIdle { unit } => self.unit_idle(unit),
             Event::UnitDestroyed { unit, .. } => {

@@ -28,6 +28,9 @@ POST_ISSUE="${POST_ISSUE:-0}"            # gh issue number to comment the result
 TRACE="${TRACE:-0}"                      # 1 = run games with ZKTDAI_TRACE_EVENTS=1
 STARTPOS="${STARTPOS:-2}"                # 0 random, 1 fixed, 2 chosen (AIs send start pos)
 MAXUNITS="${MAXUNITS:-2000}"
+SPEED="${SPEED:-1}"                      # sim speed multiplier via [MODOPTIONS] MinSpeed/MaxSpeed (e.g. 10)
+PORT="${PORT:-$((8452 + $$ % 1000))}"     # host UDP port for parallel runs
+CPUS="${CPUS:-}"                         # taskset core list pinning this engine to its own cores (parallel runs)
 TIMEOUT_SEC="${TIMEOUT_SEC:-1800}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -73,8 +76,11 @@ if [[ ! -f "$GAME_SDP" ]]; then
     [[ -f "$GAME_SDP" ]] || { echo "failed to download $PKG" >&2; exit 1; }
 fi
 if [[ -z "$GAME_TYPE" ]]; then
-    GAME_TYPE="$(unzip -p "$GAME_SDP" modinfo.lua 2>/dev/null | sed -n 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' | head -n1)"
-    [[ -n "$GAME_TYPE" ]] || GAME_TYPE="Zero-K"
+    # engine resolves Gametype by full "name version" (e.g. "Zero-K v1.14.10.3")
+    MODINFO="$(unzip -p "$GAME_SDP" modinfo.lua 2>/dev/null)"
+    N="$(sed -n "s/^[[:space:]]*name[[:space:]]*=[[:space:]]*['\"]\\(.*\\)['\"].*/\\1/p" <<< "$MODINFO" | head -n1)"
+    V="$(sed -n "s/^[[:space:]]*version[[:space:]]*=[[:space:]]*['\"]\\(.*\\)['\"].*/\\1/p" <<< "$MODINFO" | head -n1)"
+    GAME_TYPE="${N:-Zero-K}${V:+ $V}"
 fi
 echo "   game: $GAME_TYPE ($PKG)"
 
@@ -109,7 +115,8 @@ echo "   installed at $AI_DEST"
 echo "== spring settings + script.txt"
 printf 'SpringData = %s\n' "$(cd "$WORKDIR" && pwd -P | sed 's|\\|/|g')" > "$ENGINE_DIR/springsettings.cfg"
 sed -e "s/@GAMETYPE@/$GAME_TYPE/g" -e "s/@MAP@/$MAP_NAME/g" -e "s/@STARTPOS@/$STARTPOS/g" \
-    -e "s/@MAXUNITS@/$MAXUNITS/g" -e "s/@AI_NAME@/ZKTDAI $VERSION (1)/g" -e "s/@AI_SHORT@/ZKTDAI/g" \
+    -e "s/@MAXUNITS@/$MAXUNITS/g" -e "s/@SPEED@/$SPEED/g" -e "s/@PORT@/$PORT/g" \
+    -e "s/@AI_NAME@/ZKTDAI $VERSION (1)/g" -e "s/@AI_SHORT@/ZKTDAI/g" \
     -e "s/@AI_VERSION@/$VERSION/g" -e "s/@OPP_NAME@/$OPP_SHORT $OPP_VER (1)/g" -e "s/@OPP_SHORT@/$OPP_SHORT/g" \
     -e "s/@OPP_VERSION@/$OPP_VER/g" \
     "$REPO_ROOT/tools/headless/script.txt.template" > "$WORKDIR/script.txt"
@@ -123,7 +130,8 @@ ENV_PREFIX=()
 for i in $(seq 1 "$GAMES"); do
     rm -f "$WORKDIR/infolog.txt"
     set +e
-    (cd "$WORKDIR" && timeout "$TIMEOUT_SEC" env "${ENV_PREFIX[@]}" "$ENGINE_BIN" $EXTRA_ARGS > "$OUT/console-$i.log" 2>&1)
+    # CPUS: comma-separated core list for taskset (each parallel run gets its own cores, e.g. CPUS=4 or CPUS=8,9)
+    (cd "$WORKDIR" && timeout "$TIMEOUT_SEC" env "${ENV_PREFIX[@]}" ${CPUS:+taskset -c "$CPUS"} "$ENGINE_BIN" $EXTRA_ARGS > "$OUT/console-$i.log" 2>&1)
     CODE=$?
     set -e
     cp "$WORKDIR/infolog.txt" "$OUT/infolog-game$i.txt" 2>/dev/null || true

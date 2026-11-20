@@ -1,4 +1,4 @@
-# ZKTDAI headless game runner (Windows-native, no WSL needed). Linux/WSL2: use run.sh.
+﻿# ZKTDAI headless game runner (Windows-native, no WSL needed). Linux/WSL2: use run.sh.
 #
 # Downloads the Spring engine (win64) + Zero-K game + a map into a work dir,
 # installs the ZKTDAI build, writes script.txt, and runs N AI-vs-AI games with
@@ -13,6 +13,11 @@
 # or download one with:  gh run download <run-id> -n ZKTDAI-0.2.0 -D <dir>
 # (build the dll locally with:  tools\package.sh --cross)
 #
+# Use an existing Zero-K install (engine + game + maps) instead of downloading,
+# WITHOUT writing anything into it: the engine is run with -write-dir <WorkDir>,
+# so infolog/springSettings/AI install/results all land in <WorkDir> only:
+#   powershell -File tools\headless\run.ps1 -ZkInstall "D:\...\Zero-K" -Games 1 -TraceEvents
+#
 # Requires: curl.exe (ships with Windows 10+), PowerShell 5.1+, and for
 # -PostIssue the gh CLI. See README.md for all knobs.
 param(
@@ -21,7 +26,7 @@ param(
     [string]$MapFile = "",                  # e.g. altored_divide_bar_remake_1.6.sd7 (auto-derived if empty)
     [string]$GameType = "",                 # auto-detected from the game's modinfo.lua if empty
     [string]$GameTagUrl = "https://repos.springrts.com/zk/tags/zk:stable",
-    [string]$Opp = "CircuitAI:Normal",      # opponent AI as short:version
+    [string]$Opp = "CircuitAI:Normal",      # opponent AI as short:version (auto-fallback to installed version with -ZkInstall)
     [int]$Games = 1,
     [string]$WorkDir = "$env:USERPROFILE\.zktdai-headless",
     [string]$AiZip = "",                    # CI artifact zip (AI/Skirmish/ZKTDAI/<ver>/... layout) or URL
@@ -31,8 +36,12 @@ param(
     [switch]$TraceEvents,                   # run games with ZKTDAI_TRACE_EVENTS=1
     [int]$StartPos = 2,                     # 0 random, 1 fixed, 2 chosen (AIs send start pos)
     [int]$MaxUnits = 2000,
+    [int]$Speed = 1,                        # sim speed multiplier via [MODOPTIONS] MinSpeed/MaxSpeed (e.g. 10)
+    [int]$Port = 0,                         # host UDP port (0 = 8452 + pid-derived, for parallel runs)
+    [string]$CpuMask = "",                  # hex process-affinity mask, e.g. "10" = core 4; give each parallel run its own core(s)
     [int]$TimeoutSec = 1800,
-    [string]$ExtraArgs = ""
+    [string]$ExtraArgs = "",
+    [string]$ZkInstall = ""                 # existing Zero-K install dir (read-only use via -write-dir)
 )
 $ErrorActionPreference = "Stop"
 
@@ -46,6 +55,7 @@ if (-not $Version) {
 if (-not $MapFile) {
     $MapFile = ($MapName.ToLower() -replace ' ', '_') + ".sd7"
 }
+if ($Port -eq 0) { $Port = 8452 + ($PID % 1000) }
 $OppShort, $OppVer = $Opp -split ':', 2
 
 function Get-File($Url, $Dest) {
@@ -54,31 +64,53 @@ function Get-File($Url, $Dest) {
     curl.exe -fsSL -o $Dest $Url
 }
 
-Write-Host "== engine $EngineVer (win64)"
-$EngineZip = Join-Path $WorkDir "downloads\engine-$EngineVer-win64.zip"
-Get-File "https://zero-k.info/engine/win64/$EngineVer.zip" $EngineZip
-$EngineBin = Get-ChildItem -Recurse -Path $WorkDir -Filter "spring-headless.exe" -File |
-    Select-Object -First 1 -ExpandProperty FullName
-if (-not $EngineBin) {
-    Expand-Archive -Force -Path $EngineZip -DestinationPath $WorkDir
+if ($ZkInstall) {
+    # Existing install: locate the newest bundled engine, never write into the install.
+    $EngineBin = Get-ChildItem -Path "$ZkInstall\engine\win64" -Directory -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        ForEach-Object { Get-ChildItem -Path $_.FullName -Filter "spring-headless.exe" -File -ErrorAction SilentlyContinue } |
+        Select-Object -First 1 -ExpandProperty FullName
+    if (-not $EngineBin) { throw "no spring-headless.exe under $ZkInstall\engine\win64\*" }
+    $EngineDir = Split-Path $EngineBin
+    Write-Host "== engine (from install): $EngineBin"
+} else {
+    Write-Host "== engine $EngineVer (win64)"
+    $EngineZip = Join-Path $WorkDir "downloads\engine-$EngineVer-win64.zip"
+    Get-File "https://zero-k.info/engine/win64/$EngineVer.zip" $EngineZip
     $EngineBin = Get-ChildItem -Recurse -Path $WorkDir -Filter "spring-headless.exe" -File |
         Select-Object -First 1 -ExpandProperty FullName
-}
-if (-not $EngineBin) { throw "spring-headless.exe not found after extracting $EngineZip" }
-$EngineDir = Split-Path $EngineBin
-Write-Host "   engine binary: $EngineBin"
-
-Write-Host "== game (rapid zk:stable)"
-$Tag = curl.exe -fsSL $GameTagUrl
-$Pkg = ([regex]::Matches($Tag, 'packages/[A-Za-z0-9._-]+\.sdp') | Select-Object -Last 1).Value
-if (-not $Pkg) { throw "no .sdp found in $GameTagUrl" }
-$GameSdp = Join-Path $WorkDir "games\zk.sdp"
-if (-not (Test-Path $GameSdp)) {
-    $ok = $false
-    foreach ($base in @("https://repos.springrts.com/zk/stable", "https://repos.springrts.com/zk")) {
-        try { Get-File "$base/$Pkg" $GameSdp; $ok = $true; break } catch { }
+    if (-not $EngineBin) {
+        Expand-Archive -Force -Path $EngineZip -DestinationPath $WorkDir
+        $EngineBin = Get-ChildItem -Recurse -Path $WorkDir -Filter "spring-headless.exe" -File |
+            Select-Object -First 1 -ExpandProperty FullName
     }
-    if (-not $ok) { throw "failed to download $Pkg" }
+    if (-not $EngineBin) { throw "spring-headless.exe not found after extracting $EngineZip" }
+    $EngineDir = Split-Path $EngineBin
+    Write-Host "   engine binary: $EngineBin"
+}
+
+if ($ZkInstall) {
+    Write-Host "== game (from install: $ZkInstall\games)"
+    $GameSdp = Get-ChildItem -Path "$ZkInstall\games" -Filter "zk-stable.sdz" -File -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty FullName
+    if (-not $GameSdp) {
+        $GameSdp = Get-ChildItem -Path "$ZkInstall\games" -Include "zk*.sdz", "*.sdp" -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notmatch 'menu|sound|test' } | Select-Object -First 1 -ExpandProperty FullName
+    }
+    if (-not $GameSdp) { throw "no zk game archive found in $ZkInstall\games" }
+} else {
+    Write-Host "== game (rapid zk:stable)"
+    $Tag = curl.exe -fsSL $GameTagUrl
+    $Pkg = ([regex]::Matches($Tag, 'packages/[A-Za-z0-9._-]+\.sdp') | Select-Object -Last 1).Value
+    if (-not $Pkg) { throw "no .sdp found in $GameTagUrl" }
+    $GameSdp = Join-Path $WorkDir "games\zk.sdp"
+    if (-not (Test-Path $GameSdp)) {
+        $ok = $false
+        foreach ($base in @("https://repos.springrts.com/zk/stable", "https://repos.springrts.com/zk")) {
+            try { Get-File "$base/$Pkg" $GameSdp; $ok = $true; break } catch { }
+        }
+        if (-not $ok) { throw "failed to download $Pkg" }
+    }
 }
 if (-not $GameType) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -88,17 +120,27 @@ if (-not $GameType) {
         if ($entry) {
             $reader = New-Object System.IO.StreamReader($entry.Open())
             $modinfo = $reader.ReadToEnd(); $reader.Close()
-            $m = [regex]::Match($modinfo, '(?m)^\s*name\s*=\s*"(.*)"')
-            if ($m.Success) { $GameType = $m.Groups[1].Value }
+            $m = [regex]::Match($modinfo, '(?m)^\s*name\s*=\s*[''""](.*)[''""]')
+            $v = [regex]::Match($modinfo, '(?m)^\s*version\s*=\s*[''""](.*)[''""]')
+            if ($m.Success) {
+                # the engine resolves Gametype by full "name version" (e.g. "Zero-K v1.14.10.3")
+                $GameType = if ($v.Success) { "$($m.Groups[1].Value) $($v.Groups[1].Value)" } else { $m.Groups[1].Value }
+            }
         }
     } finally { $zip.Dispose() }
-    if (-not $GameType) { $GameType = "Zero-K" }
+    if (-not $GameType) { $GameType = "Zero-K $VERSION" }
 }
-Write-Host "   game: $GameType ($Pkg)"
+Write-Host "   game: $GameType ($GameSdp)"
 
 Write-Host "== map: $MapName ($MapFile)"
-$MapSd7 = Join-Path $WorkDir "maps\$MapFile"
-Get-File "https://zero-k.info/content/maps/$MapFile" $MapSd7
+if ($ZkInstall) {
+    $MapSd7 = Join-Path "$ZkInstall\maps" $MapFile
+    if (-not (Test-Path $MapSd7)) { throw "map $MapFile not found in $ZkInstall\maps" }
+    Write-Host "   map from install: $MapSd7"
+} else {
+    $MapSd7 = Join-Path $WorkDir "maps\$MapFile"
+    Get-File "https://zero-k.info/content/maps/$MapFile" $MapSd7
+}
 
 Write-Host "== AI: ZKTDAI $Version"
 $AiDest = Join-Path $WorkDir "AI\Skirmish\ZKTDAI\$Version"
@@ -118,21 +160,48 @@ if ($AiZip) {
 } else {
     $lib = @(
         "$RepoRoot\target\release\SkirmishAI.dll",
-        "$RepoRoot\target\x86_64-pc-windows-gnu\release\SkirmishAI.dll"
+        "$RepoRoot\target\x86_64-pc-windows-gnu\release\SkirmishAI.dll",
+        "$RepoRoot\dist\AI\Skirmish\ZKTDAI\$Version\SkirmishAI.dll"
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $lib) { throw "no local SkirmishAI.dll found — run tools\package.sh --cross, or pass -AiZip/-AiDir" }
+    if (-not $lib) { throw "no local SkirmishAI.dll found — run tools\package.sh, or pass -AiZip/-AiDir" }
     (Get-Content "$RepoRoot\crates\zktdai\data\AIInfo.lua") -replace '@VERSION@', $Version | Set-Content "$AiDest\AIInfo.lua"
     Copy-Item "$RepoRoot\crates\zktdai\data\AIOptions.lua" "$AiDest\AIOptions.lua"
     Copy-Item $lib "$AiDest\SkirmishAI.dll"
 }
 Write-Host "   installed at $AiDest"
 
+if ($ZkInstall) {
+    # Opponent version auto-detect: the install may only ship e.g. CircuitAI:stable.
+    $ais = & $EngineBin "-write-dir" $WorkDir --list-skirmish-ais 2>$null
+    $OppShort, $OppVer = $Opp -split ':', 2
+    $have = ($ais | Select-String -Pattern "^#\s+$([regex]::Escape($OppShort))\s+$([regex]::Escape($OppVer))\s" )
+    if (-not $have -and $OppShort -eq 'CircuitAI') {
+        $any = ($ais | Select-String -Pattern "^#\s+CircuitAI\s+(\S+)" | Select-Object -First 1)
+        if ($any) {
+            $OppVer = ([regex]::Match($any.Line, "^#\s+CircuitAI\s+(\S+)")).Groups[1].Value
+            $Opp = "CircuitAI:$OppVer"
+            Write-Host "   opponent fallback: $Opp (installed versions)"
+        }
+    }
+}
+
 Write-Host "== spring settings + script.txt"
-$sd = (Resolve-Path $WorkDir).Path -replace '\\', '/'
-"SpringData = $sd" | Set-Content "$EngineDir\springsettings.cfg"
+if ($ZkInstall) {
+    # read-only view of the install: add it as an extra data dir via the WRITE-DIR's
+    # own springsettings.cfg (the engine reads the writeable config source) — the
+    # install itself is never touched, and -write-dir keeps all writes in <WorkDir>
+    $zk = (Resolve-Path $ZkInstall).Path -replace '\\', '/'
+    "SpringData = $zk" | Set-Content "$WorkDir\springsettings.cfg"
+    Write-Host "   write-dir config: SpringData = $zk (install stays read-only)"
+} else {
+    # downloaded engine is ours: point its SpringData at the work dir
+    $sd = (Resolve-Path $WorkDir).Path -replace '\\', '/'
+    "SpringData = $sd" | Set-Content "$EngineDir\springsettings.cfg"
+}
 $tpl = Get-Content "$RepoRoot\tools\headless\script.txt.template" -Raw
 $tpl = $tpl -replace '@GAMETYPE@', $GameType -replace '@MAP@', $MapName -replace '@STARTPOS@', "$StartPos" `
-    -replace '@MAXUNITS@', "$MaxUnits" -replace '@AI_NAME@', "ZKTDAI $Version (1)" -replace '@AI_SHORT@', 'ZKTDAI' `
+    -replace '@MAXUNITS@', "$MaxUnits" -replace '@SPEED@', "$Speed" -replace '@PORT@', "$Port" `
+    -replace '@AI_NAME@', "ZKTDAI $Version (1)" -replace '@AI_SHORT@', 'ZKTDAI' `
     -replace '@AI_VERSION@', $Version -replace '@OPP_NAME@', "$OppShort $OppVer (1)" -replace '@OPP_SHORT@', $OppShort `
     -replace '@OPP_VERSION@', $OppVer
 $tpl | Set-Content "$WorkDir\script.txt"
@@ -145,18 +214,27 @@ $envName = "ZKTDAI_TRACE_EVENTS"
 for ($i = 1; $i -le $Games; $i++) {
     Remove-Item "$WorkDir\infolog.txt" -ErrorAction SilentlyContinue
     if ($TraceEvents) { $env:ZKTDAI_TRACE_EVENTS = "1" } else { Remove-Item "Env:\$envName" -ErrorAction SilentlyContinue }
+    if ($ZkInstall) {
+        # write-dir keeps every engine write (infolog, springsettings, cache) out of the install
+        $engineArgs = "-write-dir `"$WorkDir`" $ExtraArgs `"$WorkDir\script.txt`""
+    } else {
+        $engineArgs = "$ExtraArgs `"$WorkDir\script.txt`""
+    }
+    # launch via cmd.exe with file redirection: piping stdout into .NET and only
+    # reading after WaitForExit deadlocks once the engine fills the pipe buffer
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $EngineBin
-    $psi.Arguments = $ExtraArgs
+    $psi.FileName = "cmd.exe"
+    $psi.Arguments = "/c `"`"$EngineBin`" $engineArgs > `"$Out\console-$i.log`" 2> `"$Out\console-$i.err.log`""
     $psi.WorkingDirectory = $WorkDir
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
     $p = [System.Diagnostics.Process]::Start($psi)
+    if ($CpuMask) {
+        # confine the whole engine (all its threads) to the given cores
+        $p.ProcessorAffinity = [IntPtr][Convert]::ToInt64($CpuMask, 16)
+        Write-Host "   cpu affinity mask: 0x$CpuMask"
+    }
     $p.WaitForExit($TimeoutSec * 1000) | Out-Null
     $code = if ($p.HasExited) { $p.ExitCode } else { $p.Kill(); -1 }
-    $p.StandardOutput.ReadToEnd() | Out-File "$Out\console-$i.log"
-    $p.StandardError.ReadToEnd() | Out-File "$Out\console-$i.err.log" -Append
     if (Test-Path "$WorkDir\infolog.txt") { Copy-Item "$WorkDir\infolog.txt" "$Out\infolog-game$i.txt" }
     $log = "$Out\infolog-game$i.txt"
     $over = "no game-over line"

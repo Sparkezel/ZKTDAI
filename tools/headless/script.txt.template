@@ -1,9 +1,20 @@
 [GAME]
 {
-	GameType = @GAMETYPE@;
-	Map = @MAP@;
+	Gametype = @GAMETYPE@;
+	Mapname = @MAP@;
 	StartPosType = @STARTPOS@;
 	MaxUnits = @MAXUNITS@;
+	IsHost = 1;
+	HostIP = 127.0.0.1;
+	HostPort = @PORT@;
+	MyPlayerNum = 0;
+	MyPlayerName = Headless;
+
+	[MODOPTIONS]
+	{
+		MinSpeed = @SPEED@;
+		MaxSpeed = @SPEED@;
+	}
 
 	[ALLYTEAM0]
 	{
@@ -18,11 +29,13 @@
 	[TEAM0]
 	{
 		TeamLeader = 0;
+		AllyTeam = 0;
 	}
 
 	[TEAM1]
 	{
-		TeamLeader = 1;
+		TeamLeader = 0;
+		AllyTeam = 1;
 	}
 
 	[PLAYER0]
