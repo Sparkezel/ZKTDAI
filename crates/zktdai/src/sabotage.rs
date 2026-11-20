@@ -15,22 +15,24 @@ use crate::defs::Role;
 use crate::territory::Territory;
 
 /// Substrings of internal unit names that mark a static as critical, with a
-/// value score. First match wins (`antinuke` before `nuke`, `heavygeo` before
-/// `geo`, `heavyradar` before `radar`). The nuke silo is the first target; the
-/// radars sit below the singularity — blinding the enemy beats most targets, but
-/// not superweapons. The `factory` entry decays with game time, see
-/// `factory_value`.
+/// value score, sorted from highest to lowest priority. The longest matching
+/// substring wins, so overlapping hints (`antinuke`/`nuke`, `heavygeo`/`geo`,
+/// `heavyradar`/`radar`) resolve correctly regardless of list order. The nuke
+/// silo is the first target; the radars sit below the singularity — blinding
+/// the enemy beats most targets, but not superweapons. The `factory` entry
+/// decays with game time, see `factory_value`.
 const VALUE_HINTS: &[(&str, f32)] = &[
+    ("nuke", 110.0), // strategic nuke silo: first building to be attacked
     ("antinuke", 100.0),
-    ("nuke", 110.0),      // strategic nuke silo: first building to be attacked
     ("heavygeo", 90.0),   // advanced geothermal (energyheavygeo)
     ("singu", 90.0),      // singularity
+    ("factory", 90.0),    // decays with game time, see factory_value
     ("heavyradar", 85.0), // Advanced Radar (staticheavyradar)
     ("radar", 80.0),      // Radar Tower (staticradar)
     ("jammer", 75.0),     // Radar Jammer (Cornea, staticjammer)
+    ("striderhub", 70.0), // Strider Hub
     ("fusion", 70.0),
     ("geo", 60.0), // geothermal
-    ("factory", 90.0),
     ("mex", 30.0),
     ("storage", 20.0),
     ("solar", 15.0),
@@ -55,7 +57,9 @@ const REDISPATCH_FRAMES: i32 = 600;
 /// < 4000 exempt) are worth a strike even without a hint.
 fn target_value(ctx: &Ctx, d: UnitDef) -> Option<f32> {
     let name = d.name();
-    let base = match VALUE_HINTS.iter().find(|(hint, _)| name.contains(*hint)) {
+    // longest matching hint wins, so overlapping substrings resolve correctly
+    let hint = VALUE_HINTS.iter().filter(|(h, _)| name.contains(*h)).max_by_key(|(h, _)| h.len());
+    let base = match hint {
         Some(&(hint, v)) => {
             if hint == "factory" {
                 factory_value(ctx.frame)
