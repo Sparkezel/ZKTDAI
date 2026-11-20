@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use springai::{Unit, UnitDef, opt};
+use springai::{Unit, UnitDef, Vec3, opt};
 
 use crate::ai::Ctx;
 use crate::defs::Role;
@@ -107,16 +107,18 @@ impl Army {
         def.or(d.raider).or(d.skirm).or(d.assault).or(d.arty)
     }
 
-    pub fn combat_idle(&mut self, ctx: &Ctx, unit: Unit, role: Role, terr: &Territory, push: bool) {
+    pub fn combat_idle(&mut self, ctx: &Ctx, unit: Unit, role: Role, terr: &Territory, push: bool, fob: Option<Vec3>) {
         let cb = ctx.cb;
         let me = unit.pos();
+        // hurt units and skittish scouts fall back to the forward base
+        let home = fob.unwrap_or(ctx.our_start);
         let by_dist = |a: &Unit, b: &Unit| {
             a.pos().distance_2d(me).partial_cmp(&b.pos().distance_2d(me)).unwrap_or(std::cmp::Ordering::Equal)
         };
         // scouts are skittish: retreat early, avoid armed enemies
         if self.is_scout(unit.id()) || role == Role::Scout {
             if unit.health() < unit.max_health() * 0.5 {
-                unit.move_to(ctx.our_start, opt::NONE);
+                unit.move_to(home, opt::NONE);
                 return;
             }
             let armed = cb
@@ -124,7 +126,7 @@ impl Army {
                 .into_iter()
                 .filter(|e| e.def().is_some_and(|d| d.is_able_to_attack()) && e.pos().distance_2d(me) < 600.0);
             if armed.clone().next().is_some() {
-                unit.move_to(ctx.our_start, opt::NONE);
+                unit.move_to(home, opt::NONE);
                 return;
             }
             // engage only unprotected economy
@@ -179,7 +181,13 @@ impl Army {
             }
             _ => {
                 if push {
-                    unit.fight(ctx.enemy_target, opt::NONE);
+                    // stage at the forward base, then go for the enemy base
+                    let stage = fob.unwrap_or(terr.front);
+                    if me.distance_2d(stage) > 800.0 {
+                        unit.fight(stage, opt::NONE);
+                    } else {
+                        unit.fight(ctx.enemy_target, opt::NONE);
+                    }
                 } else {
                     unit.fight(terr.front, opt::NONE);
                 }

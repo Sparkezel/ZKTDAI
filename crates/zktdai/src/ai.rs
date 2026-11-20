@@ -7,6 +7,7 @@ use springai::{Callback, Event, Resource, SkirmishAi, Unit, Vec3, opt};
 use crate::army::Army;
 use crate::defs::{Defs, Role};
 use crate::economy::Economy;
+use crate::fob::Fob;
 use crate::fortify::Fortify;
 use crate::porc::Porc;
 use crate::sabotage::Sabotage;
@@ -63,6 +64,7 @@ pub struct Zktdai {
     start_sent: bool,
     terr: Territory,
     eco: Economy,
+    fob: Fob,
     fort: Fortify,
     porc: Porc,
     sab: Sabotage,
@@ -126,6 +128,7 @@ impl SkirmishAi for Zktdai {
             start_sent: false,
             terr: Territory::new(0, centre, centre),
             eco: Economy::new(),
+            fob: Fob::new(),
             fort: Fortify::new(),
             porc: Porc::new(),
             sab: Sabotage::new(),
@@ -193,6 +196,7 @@ impl SkirmishAi for Zktdai {
                     self.fort.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
                 }
                 if frame % 300 == 0 {
+                    self.fob.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
                     self.eco.update(&self.ctx, &self.roles, &self.terr, &mut self.war);
                     self.army.update(&self.ctx, &self.roles, &self.terr);
                 }
@@ -279,14 +283,26 @@ impl Zktdai {
                 &mut self.terr,
                 &self.war,
             ),
-            Role::Worker => self.eco.worker_idle(&self.ctx, unit, &mut self.ordered_spots, &mut self.terr, &self.war),
+            Role::Worker => self.eco.worker_idle(
+                &self.ctx,
+                unit,
+                &mut self.ordered_spots,
+                &mut self.terr,
+                &self.war,
+                &self.fob.mobile,
+            ),
             Role::Factory => self.army.factory_idle(&self.ctx, unit, &self.war),
             r if r.is_combat() || r.is_scout() => {
                 let push = self.army.push_ready(&self.ctx, &self.roles) || self.army.all_in(&self.ctx);
-                self.army.combat_idle(&self.ctx, unit, r, &self.terr, push);
+                self.army.combat_idle(&self.ctx, unit, r, &self.terr, push, self.fob.pos);
             }
             _ => {}
         }
+    }
+
+    /// Hurt units retreat to the forward base once it exists, else to start.
+    fn retreat_point(&self) -> Vec3 {
+        self.fob.pos.unwrap_or(self.ctx.our_start)
     }
 
     fn maybe_retreat(&mut self, unit: Unit) {
@@ -294,7 +310,7 @@ impl Zktdai {
             return;
         }
         if unit.health() < unit.max_health() * 0.35 {
-            unit.move_to(self.ctx.our_start, opt::NONE);
+            unit.move_to(self.retreat_point(), opt::NONE);
         }
     }
 

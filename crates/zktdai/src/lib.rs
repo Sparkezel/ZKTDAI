@@ -11,6 +11,7 @@ mod ai;
 mod army;
 mod defs;
 mod economy;
+mod fob;
 mod fortify;
 mod porc;
 mod sabotage;

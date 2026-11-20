@@ -200,9 +200,14 @@ impl Economy {
         ordered: &mut HashSet<usize>,
         terr: &mut Territory,
         war: &WarChest,
+        fob_mobile: &HashSet<i32>,
     ) {
         let cb = ctx.cb;
         if ctx.metal.is_none() {
+            return;
+        }
+        // constructors assigned to the forward base hold it instead
+        if fob_mobile.contains(&unit.id()) {
             return;
         }
         let Some(mex) = ctx.defs.mex else { return };
