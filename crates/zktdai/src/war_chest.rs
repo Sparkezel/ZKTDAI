@@ -232,6 +232,15 @@ impl WarChest {
             self.porc_window_start = ctx.frame;
             self.porc_spent = 0.0;
         }
+        // A queued project whose build never started (no free builder) releases
+        // its reservation after 100 s instead of locking the metal forever.
+        for p in &mut self.projects {
+            if p.state == ProjectState::Queued && ctx.frame - p.since > 3000 {
+                p.state = ProjectState::Failed;
+                p.reserved = 0.0;
+                ctx.cb.log(&format!("[war_chest] project {} never started, released", p.name));
+            }
+        }
         // Drop finished/failed projects from the list after an hour.
         self.projects
             .retain(|p| !(matches!(p.state, ProjectState::Done | ProjectState::Failed) && ctx.frame - p.since > 36000));

@@ -296,17 +296,17 @@ impl Defs {
         Self::is_commander_def(&def)
     }
 
-    /// Statics worth keeping point defenses around: factories, power plants,
-    /// missile/nuke silos, anti-nukes, strider hubs.
+    /// Statics worth keeping point defenses around: all factories, power
+    /// plants, missile/nuke silos, anti-nukes, strider hubs.
     pub fn is_critical_static(&self, def: UnitDef) -> bool {
         if def.is_able_to_move() {
             return false;
         }
-        if def.name() == "striderhub" {
+        let name = def.name();
+        if name.starts_with("factory") || name == "striderhub" {
             return true;
         }
-        [self.factory, self.fusion, self.singu, self.geo, self.adv_geo, self.silo, self.nuke_silo, self.antinuke]
-            .contains(&Some(def))
+        [self.fusion, self.singu, self.geo, self.adv_geo, self.silo, self.nuke_silo, self.antinuke].contains(&Some(def))
     }
 
     /// Anti-air defense tower (on the AA ladder or any `turretaa*`).

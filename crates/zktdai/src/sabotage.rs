@@ -111,7 +111,10 @@ impl Sabotage {
         let mut gone: Vec<(i32, Vec3)> = Vec::new();
         for (&id, &(_, pos, _)) in &self.seen {
             let unknown = Unit::from_id(cb, id).is_none();
-            let unseen_with_vision = !visible.contains(&id) && !cb.friendly_units_in(pos, 700.0).is_empty();
+            // ~450 elmos: under typical ground sightDistance (506-560), so a
+            // friendly unit this close actually has LOS of the spot (a jammer
+            // blocks radar, not LOS)
+            let unseen_with_vision = !visible.contains(&id) && !cb.friendly_units_in(pos, 450.0).is_empty();
             if unknown || unseen_with_vision {
                 gone.push((id, pos));
             }
@@ -161,8 +164,12 @@ impl Sabotage {
         strike.sort_by(|a, b| {
             a.pos().distance_2d(pos).partial_cmp(&b.pos().distance_2d(pos)).unwrap_or(std::cmp::Ordering::Equal)
         });
-        // far targets get a bigger strike
+        // far targets get a bigger strike; with no strike unit available, do not
+        // mark the target dispatched (it would be throttled with no strike sent)
         let n = strike.len().min(if pos.distance_2d(ctx.our_start) > 2000.0 { 6 } else { 4 });
+        if n == 0 {
+            return;
+        }
         // Resolve the unit if the engine still tracks it; otherwise attack the
         // remembered position (hidden/jammed target).
         let target = Unit::from_id(cb, id);
