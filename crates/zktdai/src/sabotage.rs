@@ -23,6 +23,7 @@ const VALUE_HINTS: &[(&str, f32)] = &[
     ("singu", 90.0),      // singularity
     ("heavyradar", 85.0), // Advanced Radar (staticheavyradar)
     ("radar", 80.0),      // Radar Tower (staticradar)
+    ("jammer", 75.0),     // Radar Jammer (Cornea, staticjammer)
     ("fusion", 70.0),
     ("geo", 60.0), // geothermal
     ("factory", 90.0),
