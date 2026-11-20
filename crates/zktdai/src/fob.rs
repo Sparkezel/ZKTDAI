@@ -243,7 +243,7 @@ impl Fob {
             if !have_heavy
                 && !project_active
                 && income >= 40.0
-                && war.request(ctx, "fob-heavy", ProjectKind::HeavyPorc, Some(h), cost, 0.3)
+                && war.request_priority(ctx, "fob-heavy", ProjectKind::HeavyPorc, Some(h), cost, 0.3)
                 && let Some(w) = idle_worker_near(cb, roles, pos, 1600.0)
             {
                 build_at(cb, w, h, pos, 300.0);

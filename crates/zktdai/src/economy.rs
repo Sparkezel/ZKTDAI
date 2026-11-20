@@ -290,7 +290,8 @@ impl Economy {
                 cb.team_units().iter().filter(|u| u.def().is_some_and(|d| d.name() == "energyfusion")).count();
             if income >= 40.0 && fusions_alive == 0 && !has_project(war, ProjectKind::Energy) {
                 let cost = metal_cost(ctx, fusion);
-                if war.request(ctx, "fusion1", ProjectKind::Energy, Some(fusion), cost, 0.5)
+                // high priority: the builder draws from storage first while others throttle
+                if war.request_priority(ctx, "fusion1", ProjectKind::Energy, Some(fusion), cost, 0.5)
                     && let Some(w) = idle_worker(ctx, roles, ctx.our_start, 1600.0)
                 {
                     build_at(cb, w, fusion, ctx.our_start, 400.0);

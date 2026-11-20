@@ -1,17 +1,30 @@
 //! The war chest: one ledger that owns every metal/energy spending decision.
 //!
 //! No other module reads `economy.current` to decide whether to spend; they ask
-//! the ledger. State: a reserve floor (metal kept unspent, growing with storage),
-//! an energy reserve, a porc spend cap (fraction of income per window), a
-//! stockpile target, and the strategic project list with its lifecycle
-//! (Queued/Active/Done/Failed — reservations and budget bumps are released when
-//! the project's build finishes, is destroyed, or its command is cancelled).
+//! the ledger. The economy is streaming: income flows in, spending flows out, and
+//! storage is the buffer that lets us sacrifice current strength for flexibility.
+//! So the ledger has two gates:
+//!
+//! - *Flow* (porc and other continuous spending): capped at a fraction of metal
+//!   income per 300-frame window, so storage does not drain.
+//! - *Burst* (strategic projects): may spend `current − reserve − reservations`,
+//!   i.e. draw storage down to the reserve floor. A reserve floor (growing with
+//!   storage) is the only hard constraint.
+//!
+//! High-priority projects additionally set ZK's construction priority
+//! (cmd 34220, state 2 = High) on their builder when the build starts, so the
+//! `unit_priority.lua` gadget serves that constructor from storage first while
+//! normal-priority constructors are scaled down (their build speed drops by the
+//! shortfall). Priority is cleared (state 1 = Normal) when the project ends.
 //!
 //! Plan: `docs/plan-v2.md` "war_chest ledger" (issue #4).
 
-use springai::{Resource, Unit, UnitDef};
+use std::collections::HashSet;
+
+use springai::{NO_TIMEOUT, Resource, Unit, UnitDef, opt};
 
 use crate::ai::Ctx;
+use crate::defs::cmd;
 
 // HeavyPorc/Silo/Nuke/Counter are for the open phase-3/4 issues (#15, #16).
 #[allow(dead_code)]
@@ -69,6 +82,10 @@ pub struct Project {
     pub def: Option<UnitDef>,
     /// The unit under construction.
     pub target: Option<Unit>,
+    /// The builder running the project (set High priority if `priority`).
+    pub builder: Option<i32>,
+    /// High-priority project: its builder takes metal from storage first.
+    pub priority: bool,
     /// Metal reserved (not spendable by others) while queued/active.
     pub reserved: f32,
     /// Extra porc spend allowed while active, as a fraction of the porc cap.
@@ -85,12 +102,16 @@ pub struct WarChest {
     metal: Option<Resource>,
     energy: Option<Resource>,
     pub reserve_metal: f32,
+    /// The reserve floor requested at game start (option `reserve_metal`).
+    reserve_metal_start: f32,
     pub reserve_energy: f32,
     /// Porc may spend at most this fraction of metal income per window.
     pub porc_cap_pct: f32,
     /// Desired metal stockpile (plus headroom).
     pub stockpile_target: f32,
     pub projects: Vec<Project>,
+    /// Builders we set to High construction priority (cmd 34220 state 2).
+    priority_units: HashSet<i32>,
     porc_spent: f32,
     porc_window_start: i32,
     /// Strategy profile chosen at game start (option `strategy`, or seeded random).
@@ -110,10 +131,12 @@ impl WarChest {
             metal: cb.resource_by_name("Metal"),
             energy: cb.resource_by_name("Energy"),
             reserve_metal: opts.reserve_metal_start,
+            reserve_metal_start: opts.reserve_metal_start,
             reserve_energy: 0.0,
             porc_cap_pct: opts.porc_cap_pct,
             stockpile_target: opts.stockpile_target,
             projects: Vec::new(),
+            priority_units: HashSet::new(),
             porc_spent: 0.0,
             porc_window_start: 0,
             strategy: opts.strategy,
@@ -169,6 +192,35 @@ impl WarChest {
         cost: f32,
         budget_bump: f32,
     ) -> bool {
+        self.request_inner(ctx, name, kind, def, cost, budget_bump, false)
+    }
+
+    /// Same, but the project's builder gets High construction priority (cmd
+    /// 34220 state 2) when the build starts: it draws metal from storage first
+    /// while normal-priority constructors are scaled down by the gadget.
+    pub fn request_priority(
+        &mut self,
+        ctx: &Ctx,
+        name: &'static str,
+        kind: ProjectKind,
+        def: Option<UnitDef>,
+        cost: f32,
+        budget_bump: f32,
+    ) -> bool {
+        self.request_inner(ctx, name, kind, def, cost, budget_bump, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn request_inner(
+        &mut self,
+        ctx: &Ctx,
+        name: &'static str,
+        kind: ProjectKind,
+        def: Option<UnitDef>,
+        cost: f32,
+        budget_bump: f32,
+        priority: bool,
+    ) -> bool {
         if !self.can_spend(ctx, kind, cost) {
             return false;
         }
@@ -178,6 +230,8 @@ impl WarChest {
             state: ProjectState::Queued,
             def,
             target: None,
+            builder: None,
+            priority,
             reserved: cost,
             budget_bump,
             since: ctx.frame,
@@ -185,49 +239,85 @@ impl WarChest {
         true
     }
 
+    /// Set a builder to High construction priority (cmd 34220, state 2 = High).
+    fn set_high_priority(&mut self, cb: springai::Callback, builder: Unit) {
+        if self.priority_units.insert(builder.id()) {
+            builder.execute_custom_command(cmd::PRIORITY, &[2.0], opt::NONE, NO_TIMEOUT);
+            cb.log(&format!("[war_chest] builder {} set High priority", builder.id()));
+        }
+    }
+
+    /// Back to Normal priority (state 1) for a builder we flagged.
+    fn release_priority(&mut self, cb: springai::Callback, builder_id: i32) {
+        if self.priority_units.remove(&builder_id)
+            && let Some(b) = Unit::from_id(cb, builder_id)
+        {
+            b.execute_custom_command(cmd::PRIORITY, &[1.0], opt::NONE, NO_TIMEOUT);
+        }
+    }
+
     /// A builder of ours started building `unit`: activate the matching project.
     pub fn on_unit_created(&mut self, ctx: &Ctx, unit: Unit, builder: Option<Unit>) {
-        if builder.is_none() {
-            return;
-        }
         let Some(def) = unit.def() else { return };
-        for p in &mut self.projects {
-            if p.state == ProjectState::Queued && p.def == Some(def) {
-                p.state = ProjectState::Active;
-                p.target = Some(unit);
-                ctx.cb.log(&format!("[war_chest] project {} active (frame {})", p.name, ctx.frame));
-                return;
-            }
+        let activate = self.projects.iter().position(|p| p.state == ProjectState::Queued && p.def == Some(def));
+        let Some(i) = activate else { return };
+        let (name, priority) = {
+            let p = &mut self.projects[i];
+            p.state = ProjectState::Active;
+            p.target = Some(unit);
+            p.builder = builder.map(|b| b.id());
+            (p.name, p.priority)
+        };
+        ctx.cb.log(&format!("[war_chest] project {} active (frame {})", name, ctx.frame));
+        if priority && let Some(b) = builder {
+            self.set_high_priority(ctx.cb, b);
         }
     }
 
     pub fn on_unit_finished(&mut self, ctx: &Ctx, unit: Unit) {
+        let mut releases = Vec::new();
         for p in &mut self.projects {
             if p.target == Some(unit) && p.state == ProjectState::Active {
                 p.state = ProjectState::Done;
                 p.reserved = 0.0;
+                if let Some(bid) = p.builder {
+                    releases.push(bid);
+                }
                 ctx.cb.log(&format!("[war_chest] project {} done (frame {})", p.name, ctx.frame));
             }
+        }
+        for bid in releases {
+            self.release_priority(ctx.cb, bid);
         }
     }
 
     pub fn on_unit_destroyed(&mut self, ctx: &Ctx, unit: Unit) {
+        let mut releases = Vec::new();
         for p in &mut self.projects {
             if p.target == Some(unit) && p.state != ProjectState::Done {
                 p.state = ProjectState::Failed;
                 p.reserved = 0.0;
+                if let Some(bid) = p.builder {
+                    releases.push(bid);
+                }
                 ctx.cb.log(&format!("[war_chest] project {} failed (frame {})", p.name, ctx.frame));
             }
+        }
+        for bid in releases {
+            self.release_priority(ctx.cb, bid);
         }
     }
 
     /// Per-window bookkeeping and the reserve floor; call every ~30 frames.
     pub fn update(&mut self, ctx: &Ctx) {
-        // Reserve floor: ~10% of storage capacity, at least the starting reserve,
-        // never more than the stockpile target.
+        // Reserve floor: ~10% of storage capacity, at least max(50, the reserve
+        // requested at start), never more than the stockpile target. This is the
+        // hard limit for burst spending: storage may be drawn down to it.
         let storage = self.storage_metal(ctx);
-        let lo = self.reserve_metal.min(50.0).min(self.stockpile_target); // clamp panics if lo > hi
+        let lo = self.reserve_metal_start.max(50.0).min(self.stockpile_target); // clamp panics if lo > hi
         self.reserve_metal = (0.1 * storage).clamp(lo, self.stockpile_target);
+        // Drop priority flags of builders that died.
+        self.priority_units.retain(|id| Unit::from_id(ctx.cb, *id).is_some());
         if ctx.frame - self.porc_window_start >= PORC_WINDOW {
             self.porc_window_start = ctx.frame;
             self.porc_spent = 0.0;
