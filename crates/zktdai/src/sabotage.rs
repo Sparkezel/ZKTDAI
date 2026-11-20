@@ -11,21 +11,30 @@ use crate::defs::Role;
 use crate::territory::Territory;
 
 /// Substrings of internal unit names that mark a static as critical, with a
-/// value score. First match wins.
+/// value score. First match wins (`antinuke` before `nuke`, `heavygeo` before
+/// `geo`). The `factory` entry decays with game time, see `factory_value`.
 const VALUE_HINTS: &[(&str, f32)] = &[
     ("antinuke", 100.0),
     ("nuke", 100.0),
-    ("factory", 80.0),
+    ("heavygeo", 90.0), // advanced geothermal (energyheavygeo)
+    ("singu", 90.0),    // singularity
     ("fusion", 70.0),
-    ("singu", 60.0),
-    ("geo", 50.0),
+    ("geo", 60.0), // geothermal
+    ("radar", 100.0),
+    ("factory", 90.0),
     ("mex", 30.0),
     ("storage", 20.0),
     ("solar", 15.0),
     ("wind", 15.0),
     ("pylon", 15.0),
-    ("radar", 10.0),
 ];
+
+/// Factory value over time: 90 at game start, −10 every 2 minutes, floor 40
+/// from 10 minutes on (a factory still matters late, just less than a superweapon).
+fn factory_value(frame: i32) -> f32 {
+    let steps = (frame / 3600).min(5);
+    90.0 - 10.0 * steps as f32
+}
 
 /// How close an armed enemy mobile must be to count as defending a target.
 const DEFENSE_RADIUS: f32 = 700.0;
@@ -59,7 +68,8 @@ impl Sabotage {
                 continue; // statics only
             }
             let name = d.name();
-            let Some(&(_, hint_value)) = VALUE_HINTS.iter().find(|(hint, _)| name.contains(*hint)) else { continue };
+            let Some(&(hint, hint_value)) = VALUE_HINTS.iter().find(|(hint, _)| name.contains(*hint)) else { continue };
+            let hint_value = if hint == "factory" { factory_value(ctx.frame) } else { hint_value };
             // heavies (non-flying, cost > 1000; commanders < 4000 exempt) are worth a strike too
             let value = hint_value.max(if ctx.defs.is_heavy(d) { 90.0 } else { 0.0 });
             let defended = enemies.iter().any(|o| {
