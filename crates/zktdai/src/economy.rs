@@ -66,6 +66,59 @@ pub fn build_mex(cb: Callback, unit: Unit, mex: UnitDef, spot: Vec3) -> bool {
     build_at(cb, unit, mex, spot, 64.0)
 }
 
+/// True if `site` would block a friendly factory's exit lane. Factories need a
+/// clear corridor on their front side (toward the map centre / enemy) for
+/// built units to path out — power or other structures placed in that sector
+/// trap the factory's output. Factories/plates themselves are exempt.
+pub fn blocks_factory_exit(ctx: &Ctx, roles: &HashMap<i32, Role>, site: Vec3) -> bool {
+    let cb = ctx.cb;
+    let centre = Vec3::xz(cb.map().width() as f32 * 4.0, cb.map().height() as f32 * 4.0);
+    for u in cb.team_units() {
+        if roles.get(&u.id()) != Some(&Role::Factory) || u.is_being_built() {
+            continue;
+        }
+        let fp = u.pos();
+        let s = Vec3::xz(site.x - fp.x, site.z - fp.z);
+        let sl = (s.x * s.x + s.z * s.z).sqrt();
+        if sl > 280.0 {
+            continue;
+        }
+        if sl < 1.0 {
+            return true; // on top of the factory
+        }
+        let f = Vec3::xz(centre.x - fp.x, centre.z - fp.z);
+        let fl = (f.x * f.x + f.z * f.z).sqrt().max(1.0);
+        let dot = (f.x * s.x + f.z * s.z) / (fl * sl);
+        if dot > 0.5 {
+            return true; // within ~60 deg of the front lane
+        }
+    }
+    false
+}
+
+/// Like `build_at`, but refuses sites that would block a factory's exit lane
+/// (used for power/lotus/pylon placement around the base).
+pub fn build_at_clear(
+    cb: Callback,
+    ctx: &Ctx,
+    roles: &HashMap<i32, Role>,
+    unit: Unit,
+    def: UnitDef,
+    want: Vec3,
+    search_radius: f32,
+) -> bool {
+    let site = cb.map().find_closest_build_site(def, want, search_radius, 0, 0);
+    if site.x < 0.0 {
+        return false;
+    }
+    if blocks_factory_exit(ctx, roles, site) {
+        cb.log(&format!("[eco] {} at ({:.0},{:.0}) rejected: blocks factory exit", def.name(), site.x, site.z));
+        return false;
+    }
+    let y = cb.map().elevation_at(site.x, site.z);
+    unit.build(def, Vec3::new(site.x, y, site.z), 0, opt::NONE)
+}
+
 fn current_metal(ctx: &Ctx) -> f32 {
     ctx.metal.map(|m| ctx.cb.economy().current(m)).unwrap_or(0.0)
 }
@@ -210,7 +263,10 @@ impl Economy {
                                 .unwrap_or(std::cmp::Ordering::Equal)
                         });
                         self.opening_mexes = spots.into_iter().take(3).collect();
-                        self.opening = Opening::Con;
+                        // don't wait for the factory's first con to finish:
+                        // the factory builds cons itself (factory_idle), the
+                        // commander goes capture the opening mexes right away
+                        self.opening = Opening::Mexes;
                     }
                 } else {
                     self.opening = Opening::Con;
@@ -218,8 +274,9 @@ impl Economy {
                 return;
             }
             Opening::Con => {
-                // the factory builds the first con; the commander assists it
-                if roles.values().any(|r| *r == Role::Worker) {
+                // the factory builds the first con itself; the commander only
+                // assists while no factory exists yet, then moves to the mexes
+                if roles.values().any(|r| *r == Role::Factory) || roles.values().any(|r| *r == Role::Worker) {
                     self.opening = Opening::Mexes;
                     return;
                 }
@@ -256,7 +313,7 @@ impl Economy {
                     && let Some(p) = self.grid_pylons.get(self.pylons_built).copied()
                     && war.can_spend(ctx, ProjectKind::Energy, metal_cost(ctx, pylon))
                     && cur >= metal_cost(ctx, pylon)
-                    && build_at(cb, unit, pylon, p, 160.0)
+                    && build_at_clear(cb, ctx, roles, unit, pylon, p, 160.0)
                 {
                     self.pylons_built += 1;
                     return;
@@ -273,7 +330,7 @@ impl Economy {
                     let a = ctx.spots[self.opening_mexes[i]];
                     let b = ctx.spots[self.opening_mexes[i + 1]];
                     let mid = Vec3::xz((a.x + b.x) / 2.0, (a.z + b.z) / 2.0);
-                    if build_at(cb, unit, wind, mid, 200.0) {
+                    if build_at_clear(cb, ctx, roles, unit, wind, mid, 200.0) {
                         self.wind_built += 1;
                     }
                     return;
@@ -284,7 +341,9 @@ impl Economy {
                 if self.solars_built < 2
                     && let Some(solar) = ctx.defs.solar
                 {
-                    if cur >= metal_cost(ctx, solar) && build_at(cb, unit, solar, ctx.our_start, 300.0) {
+                    if cur >= metal_cost(ctx, solar)
+                        && build_at_clear(cb, ctx, roles, unit, solar, ctx.our_start, 300.0)
+                    {
                         self.solars_built += 1;
                     }
                     return;
@@ -303,7 +362,7 @@ impl Economy {
             let built = !already
                 && war.can_spend(ctx, ProjectKind::Porc, metal_cost(ctx, lotus))
                 && cur >= metal_cost(ctx, lotus)
-                && build_at(cb, unit, lotus, ctx.our_start, 400.0);
+                && build_at_clear(cb, ctx, roles, unit, lotus, ctx.our_start, 400.0);
             if already || built {
                 self.lotus_built = true;
                 return;
@@ -328,7 +387,7 @@ impl Economy {
                 && eco.income(energy) < 0.8 * usage
                 && war.can_spend(ctx, ProjectKind::Energy, metal_cost(ctx, solar))
                 && cur >= metal_cost(ctx, solar)
-                && build_at(cb, unit, solar, ctx.our_start, 300.0)
+                && build_at_clear(cb, ctx, roles, unit, solar, ctx.our_start, 300.0)
             {
                 return;
             }
@@ -337,7 +396,7 @@ impl Economy {
             && let Some(power) = power_def(ctx)
             && war.can_spend(ctx, ProjectKind::Energy, metal_cost(ctx, power))
             && cur >= metal_cost(ctx, power)
-            && build_at(cb, unit, power, ctx.our_start, 300.0)
+            && build_at_clear(cb, ctx, roles, unit, power, ctx.our_start, 300.0)
         {
             return;
         }
@@ -356,6 +415,7 @@ impl Economy {
         &mut self,
         ctx: &Ctx,
         unit: Unit,
+        roles: &HashMap<i32, Role>,
         ordered: &mut HashSet<usize>,
         terr: &mut Territory,
         war: &WarChest,
@@ -389,7 +449,7 @@ impl Economy {
             && let Some(power) = power_def(ctx)
             && war.can_spend(ctx, ProjectKind::Energy, metal_cost(ctx, power))
             && cur >= metal_cost(ctx, power)
-            && build_at(cb, unit, power, ctx.our_start, 300.0)
+            && build_at_clear(cb, ctx, roles, unit, power, ctx.our_start, 300.0)
         {
             return;
         }

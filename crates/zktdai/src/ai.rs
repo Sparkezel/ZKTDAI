@@ -505,6 +505,7 @@ impl Zktdai {
             Role::Worker => self.eco.worker_idle(
                 &self.ctx,
                 unit,
+                &self.roles,
                 &mut self.ordered_spots,
                 &mut self.terr,
                 &self.war,
