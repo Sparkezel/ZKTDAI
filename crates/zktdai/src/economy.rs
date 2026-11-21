@@ -96,6 +96,32 @@ pub fn repair_unfinished_mex(ctx: &Ctx, unit: &Unit) -> bool {
     false
 }
 
+/// Build a factory at raw spiral site `t` around `base` — NOT via
+/// find_closest_build_site: its buildability test disagrees with the engine's
+/// TestUnitBuildSquare often enough that the build is silently dropped
+/// (CBuilderCAI::IsBuildPosBlocked). Raw positions are what actually work.
+/// Skips sites in a friendly factory's exit lane.
+pub fn build_factory_spiral(
+    ctx: &Ctx,
+    roles: &HashMap<i32, Role>,
+    unit: Unit,
+    f: UnitDef,
+    base: Vec3,
+    t: usize,
+) -> bool {
+    let cb = ctx.cb;
+    let angle = (t % 8) as f32 * std::f32::consts::FRAC_PI_4;
+    let radius = 96.0 + 80.0 * (t / 8) as f32;
+    let site = Vec3::xz(base.x + angle.cos() * radius, base.z + angle.sin() * radius);
+    if blocks_factory_exit(ctx, roles, site) {
+        return false;
+    }
+    let y = cb.map().elevation_at(site.x, site.z);
+    let timeout = cb.game().current_frame() + 1800;
+    cb.log(&format!("[eco] factory try {t} f={} def={} site=({:.0},{:.0})", ctx.frame, f.name(), site.x, site.z));
+    unit.build_timed(f, Vec3::new(site.x, y, site.z), 0, opt::NONE, timeout)
+}
+
 /// True if the unit's command queue already contains a build order for `mex`
 /// at (within 96 elmos of) `spot` — zkgbai's `queued_build_matches`: the engine
 /// can silently drop a build (blocked footprint, AllowCommand denial), and we
@@ -326,23 +352,7 @@ impl Economy {
                 // us, and the nearest site can be blocked (river/slope).
                 let t = self.factory_tries;
                 self.factory_tries += 1;
-                let angle = (t % 8) as f32 * std::f32::consts::FRAC_PI_4;
-                let radius = 96.0 + 80.0 * (t / 8) as f32;
-                let want = Vec3::xz(ctx.our_start.x + angle.cos() * radius, ctx.our_start.z + angle.sin() * radius);
-                let raw = cb.map().find_closest_build_site(f, want, 240.0, 0, 0);
-                let site = if raw.x < 0.0 { want } else { Vec3::xz(raw.x, raw.z) };
-                let y = cb.map().elevation_at(site.x, site.z);
-                cb.log(&format!(
-                    "[eco] factory try {t} f={} def={} site=({:.0},{:.0}) want=({:.0},{:.0}) cur={:.0}",
-                    ctx.frame,
-                    f.name(),
-                    site.x,
-                    site.z,
-                    want.x,
-                    want.z,
-                    cur
-                ));
-                unit.build(f, Vec3::new(site.x, y, site.z), 0, opt::NONE);
+                build_factory_spiral(ctx, roles, unit, f, ctx.our_start, t);
                 return;
             }
             Opening::Con => {

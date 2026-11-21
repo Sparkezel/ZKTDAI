@@ -13,8 +13,8 @@ use springai::{NO_TIMEOUT, Unit, UnitDef, Vec3, opt};
 use crate::ai::Ctx;
 use crate::defs::{Role, cmd};
 use crate::economy::{
-    build_at, build_at_clear, build_mex, has_queued_mex_build, metal_cost, power_def, repair_unfinished_mex,
-    wants_energy,
+    build_at, build_at_clear, build_factory_spiral, build_mex, has_queued_mex_build, metal_cost, power_def,
+    repair_unfinished_mex, wants_energy,
 };
 use crate::territory::Territory;
 use crate::threat::Threat;
@@ -88,8 +88,11 @@ pub struct Planner {
     escort_cd: i32,
     air_fac_queued: bool,
     air_fac_done: bool,
-    second_fac_queued: bool,
-    second_fac_done: bool,
+    /// Frame of the last factory build attempt (rate-limited).
+    fac_last_try: i32,
+    /// Factory build-attempt spiral index and reserve counter.
+    fac_tries: usize,
+    fac_reserved: usize,
     /// Per-constructor in-flight mex approach (spot, sent frame, best dist).
     approach: HashMap<i32, Approach>,
 }
@@ -107,8 +110,9 @@ impl Planner {
             escort_cd: 0,
             air_fac_queued: false,
             air_fac_done: false,
-            second_fac_queued: false,
-            second_fac_done: false,
+            fac_last_try: -1000,
+            fac_tries: 0,
+            fac_reserved: 0,
             approach: HashMap::new(),
         }
     }
@@ -124,9 +128,9 @@ impl Planner {
         let Some(metal) = ctx.metal else { return 1 };
         let income = ctx.cb.economy().income(metal);
         let free = ctx.spots.iter().zip(&terr.owned).zip(&terr.enemy).filter(|((_, o), e)| !**o && !**e).count();
-        let expand = free.min(5);
+        let expand = free.min(8);
         let reclaim = if income < 20.0 { 1 } else { (1 + (income / 25.0) as usize).min(4) };
-        (2 + expand + reclaim).min(12)
+        (2 + expand + reclaim).min(14)
     }
 
     /// Track a wreck (from UnitDestroyed/EnemyDestroyed) for reclaim jobs.
@@ -214,7 +218,7 @@ impl Planner {
         let free = ctx.spots.iter().zip(&terr.owned).zip(&terr.enemy).filter(|((_, o), e)| !**o && !**e).count();
         let _ = income;
         let want: [(ConJob, usize); 4] =
-            [(ConJob::Energy, 1), (ConJob::Base, 1), (ConJob::Expand, free.min(5)), (ConJob::Reclaim, usize::MAX)];
+            [(ConJob::Energy, 1), (ConJob::Base, 1), (ConJob::Expand, free.min(8)), (ConJob::Reclaim, usize::MAX)];
         let mut counts: HashMap<ConJob, usize> = HashMap::new();
         let mut new_jobs: HashMap<i32, ConJob> = HashMap::new();
         let mut old: Vec<(i32, ConJob)> = self.jobs.iter().map(|(id, j)| (*id, *j)).collect();
@@ -292,32 +296,40 @@ impl Planner {
     /// defense on demand are porc's job; unit build-option expansion is v0.3.
     fn base_step(&mut self, ctx: &Ctx, unit: Unit, roles: &HashMap<i32, Role>, terr: &Territory, war: &mut WarChest) {
         let cb = ctx.cb;
-        // Second factory once the economy can afford it: one factory cannot
-        // replace a raider army that is constantly fighting.
-        if !self.second_fac_done {
+        // More factories as the economy grows (CircuitAI scales factory count
+        // with income: factoryPower < (income - assist) * 1.2): one factory
+        // cannot replace an army that is constantly fighting.
+        {
             let income = ctx.metal.map(|m| cb.economy().income(m)).unwrap_or(0.0);
-            let factories = cb
-                .team_units()
-                .iter()
-                .filter(|u| roles.get(&u.id()) == Some(&Role::Factory) && !u.is_being_built())
-                .count();
-            let want_second = factories < 2 && (income >= 25.0 || ctx.frame >= 12000);
-            if want_second && let Some(f) = ctx.defs.factory {
+            // count nanoframes too (roles are assigned on UnitCreated), else a
+            // silently-dropped build makes us re-issue every 600f forever
+            let factories = cb.team_units().iter().filter(|u| roles.get(&u.id()) == Some(&Role::Factory)).count();
+            // rough build-power analogue: factories wanted ~ income/25, at least 2 midgame
+            let want_fac = (2 + (income / 25.0) as usize).min(4);
+            let want_more = factories < want_fac && (income >= 15.0 || ctx.frame >= 9000);
+            if want_more
+                && let Some(f) = ctx.defs.factory
+                && ctx.frame - self.fac_last_try >= 600
+            {
+                self.fac_last_try = ctx.frame;
                 let cost = metal_cost(ctx, f);
-                if !self.second_fac_queued {
-                    // Reserve the cost (stops army/porc draining it) but start
-                    // the build immediately: buildings don't need the full metal
-                    // up front, construction is paid per frame from build power.
-                    self.second_fac_queued = true;
-                    war.request_save(ctx, "second-factory", ProjectKind::Expansion, Some(f), cost);
+                // Reserve the cost once per wanted factory (stops army/porc
+                // draining it), but start the build immediately: buildings
+                // don't need the full metal up front, construction is paid per
+                // frame from build power.
+                if self.fac_reserved < want_fac {
+                    self.fac_reserved += 1;
+                    war.request_save(ctx, "factory", ProjectKind::Expansion, Some(f), cost);
                 }
                 // CircuitAI places follow-up factories at finished clusters
-                // near the midfield (forward base), offset from the enemy:
-                // anchor to the owned spot nearest the front line.
-                let want = terr.frontier_spot(ctx).map(|i| ctx.spots[i]).unwrap_or(ctx.our_start);
-                if build_at_clear(cb, ctx, roles, unit, f, want, 500.0) {
-                    self.second_fac_done = true;
-                    cb.log("[planner] second factory started");
+                // near the midfield (forward base): anchor to the owned spot
+                // nearest the front line; raw spiral sites (find_closest_build_site
+                // results get silently dropped too often for factories).
+                let base = terr.frontier_spot(ctx).map(|i| ctx.spots[i]).unwrap_or(ctx.our_start);
+                let t = self.fac_tries;
+                self.fac_tries += 1;
+                if build_factory_spiral(ctx, roles, unit, f, base, t) {
+                    cb.log(&format!("[planner] factory #{factories} try {t}"));
                 }
             }
         }
@@ -437,6 +449,14 @@ impl Planner {
         // re-send. Re-send a stalled approach at most every 300f with no
         // 32-elmo progress.
         if let Some(a) = self.approach.get(&unit.id()).copied() {
+            if a.spot < ctx.spots.len() && terr.owned[a.spot] {
+                // the mex we were walking to/building is up: secure it with a
+                // turret, then move on
+                self.approach.remove(&unit.id());
+                self.secure_cluster(ctx, &unit, terr, a.spot, war);
+                self.escort(ctx, &unit, roles);
+                return;
+            }
             if a.spot < ctx.spots.len() && !terr.owned[a.spot] && !terr.enemy[a.spot] {
                 let spot = ctx.spots[a.spot];
                 let d = me.distance_2d(spot);
@@ -480,10 +500,13 @@ impl Planner {
                     || threat.local_superiority(ctx, roles, spot, ESCORT_ARMY_RADIUS, ESCORT_ENEMY_RADIUS))
             })
             .min_by(|a, b| {
-                // prefer frontier spots (near the front), then nearest to us
+                // prefer the frontier cluster (CircuitAI expands cluster by
+                // cluster toward the enemy), then the nearest spot to us
                 let key = |i: &usize| {
                     let s = ctx.spots[*i];
-                    (terr.front.distance_2d(s) * 2.0 + me.distance_2d(s)) as i64
+                    let c = terr.spot_cluster.get(*i).copied().unwrap_or(0);
+                    let cd = terr.cluster_pos.get(c).map(|p| p.distance_2d(terr.front)).unwrap_or(0.0);
+                    (cd * 2.0 + me.distance_2d(s)) as i64
                 };
                 key(a).cmp(&key(b))
             });
@@ -499,34 +522,34 @@ impl Planner {
             return;
         };
         self.send_mex_chain(ctx, &unit, mex, i, war, ordered);
-        // 3) secure the cluster once the mex is up: lotus, plus a picket past
-        // the 3rd cluster or 14 total mexes
-        if terr.owned[i] {
-            self.approach.remove(&unit.id());
-            let owned_count = terr.owned.iter().filter(|o| **o).count();
-            let picket_needed = self.clusters_secured >= 3 || owned_count > 14;
-            let lotus = ctx.defs.turret_ladder.first().copied();
-            let def = if picket_needed { ctx.defs.picket.or(lotus) } else { lotus };
-            if let Some(d) = def {
-                let cost = metal_cost(ctx, d);
-                if war.can_spend(ctx, ProjectKind::Porc, cost)
-                    && cur >= cost
-                    && build_at(cb, unit, d, ctx.spots[i], 200.0)
-                {
-                    if !picket_needed {
-                        self.clusters_secured += 1;
-                    }
-                    cb.log(&format!(
-                        "[planner] con {} secured mex {} with {}{}",
-                        unit.id(),
-                        i,
-                        d.name(),
-                        if picket_needed { " (picket)" } else { "" }
-                    ));
+        self.escort(ctx, &unit, roles);
+    }
+
+    /// Secure a spot we just finished with a lotus (picket past the 3rd
+    /// cluster or 14 total mexes) — CircuitAI porcs every expansion mex.
+    fn secure_cluster(&mut self, ctx: &Ctx, unit: &Unit, terr: &Territory, i: usize, war: &mut WarChest) {
+        let cb = ctx.cb;
+        let cur = ctx.metal.map(|m| cb.economy().current(m)).unwrap_or(0.0);
+        let owned_count = terr.owned.iter().filter(|o| **o).count();
+        let picket_needed = self.clusters_secured >= 3 || owned_count > 14;
+        let lotus = ctx.defs.turret_ladder.first().copied();
+        let def = if picket_needed { ctx.defs.picket.or(lotus) } else { lotus };
+        if let Some(d) = def {
+            let cost = metal_cost(ctx, d);
+            if war.can_spend(ctx, ProjectKind::Porc, cost) && cur >= cost && build_at(cb, *unit, d, ctx.spots[i], 200.0)
+            {
+                if !picket_needed {
+                    self.clusters_secured += 1;
                 }
+                cb.log(&format!(
+                    "[planner] con {} secured mex {} with {}{}",
+                    unit.id(),
+                    i,
+                    d.name(),
+                    if picket_needed { " (picket)" } else { "" }
+                ));
             }
         }
-        self.escort(ctx, &unit, roles);
     }
 
     /// A reclaimer: nearest wreck, else its taskgroup's frontline position

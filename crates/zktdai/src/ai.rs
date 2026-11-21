@@ -15,7 +15,7 @@ fn trace_events() -> bool {
 
 use crate::army::Army;
 use crate::defs::{Defs, Role, cmd};
-use crate::economy::Economy;
+use crate::economy::{Economy, has_queued_mex_build};
 use crate::fob::Fob;
 use crate::fortify::Fortify;
 use crate::planner::Planner;
@@ -304,12 +304,18 @@ impl SkirmishAi for Zktdai {
                     let spots = self.ctx.spots.clone();
                     let owned = self.terr.owned.clone();
                     let mut expired = Vec::new();
+                    let roles = self.roles.clone();
                     self.ordered_spots.retain(|i| {
+                        let spot = spots[*i];
+                        // keep the order if the mex is up, or a builder is still
+                        // en route / has the build queued — only a truly dead
+                        // order (nobody near, nothing queued) is denied
                         let keep = owned[*i]
-                            || cb
-                                .team_units()
-                                .iter()
-                                .any(|u| u.def() == Some(mex) && u.pos().distance_2d(spots[*i]) < 96.0);
+                            || cb.team_units().iter().any(|u| u.def() == Some(mex) && u.pos().distance_2d(spot) < 96.0)
+                            || cb.team_units().iter().any(|u| {
+                                matches!(roles.get(&u.id()), Some(Role::Commander) | Some(Role::Worker))
+                                    && (has_queued_mex_build(u, mex, spot) || u.pos().distance_2d(spot) < 400.0)
+                            });
                         if !keep {
                             expired.push(*i);
                         }

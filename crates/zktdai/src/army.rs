@@ -122,9 +122,29 @@ impl Army {
         // air factories (factoryplane/factorygunship) build the air mix:
         // mostly fighters (Swift), every 4th a flying scout (Sparrow)
         let air = factory.def().is_some_and(is_air_factory);
-        let Some(def) = self.next_unit(ctx, air, factory.def()) else { return };
-        let cost = def.cost(metal);
+        let mut def = self.next_unit(ctx, air, factory.def());
         let cur = cb.economy().current(metal);
+        // Cost fallback: if the picked unit is unaffordable, build the cheapest
+        // combat unit this factory CAN build that we can afford — never stall
+        // waiting for an expensive pick while a cheap one is available.
+        if let Some(d) = def
+            && d.cost(metal) > cur
+            && let Some(f) = factory.def()
+        {
+            let mut cands: Vec<UnitDef> = f
+                .build_options()
+                .into_iter()
+                .filter(|o| ctx.defs.role(*o).is_combat() && o.cost(metal) <= cur)
+                .collect();
+            cands.sort_by(|a, b| a.cost(metal).partial_cmp(&b.cost(metal)).unwrap_or(std::cmp::Ordering::Equal));
+            if let Some(c) = cands.first().copied()
+                && c != d
+            {
+                def = Some(c);
+            }
+        }
+        let Some(def) = def else { return };
+        let cost = def.cost(metal);
         if cur < cost {
             if ctx.frame % 600 == 0 {
                 cb.log(&format!(
@@ -167,20 +187,25 @@ impl Army {
             return self.next_air_unit(ctx, fac);
         }
         let d = &ctx.defs;
+        // Only pick defs this factory can actually build: the engine silently
+        // drops builds of defs not in buildOptions (CBuilderCAI), which is why
+        // the old fixed mix produced only ronins from a cloak factory.
+        let opts: Vec<UnitDef> = fac.map(|f| f.build_options()).unwrap_or_default();
+        let buildable = |def: Option<UnitDef>| def.filter(|x| opts.is_empty() || opts.contains(x));
         let (wr, ws, wa, wt): (i32, i32, i32, i32) = if ctx.frame < 6000 { (70, 25, 0, 5) } else { (25, 30, 25, 20) };
         let total = wr + ws + wa + wt;
         let pick = (self.cycle as i32) % total;
         self.cycle += 1;
         let def = if pick < wr {
-            d.raider
+            buildable(d.raider)
         } else if pick < wr + ws {
-            d.skirm
+            buildable(d.skirm)
         } else if pick < wr + ws + wa {
-            d.assault
+            buildable(d.assault)
         } else {
-            d.arty
+            buildable(d.arty)
         };
-        def.or(d.raider).or(d.skirm).or(d.assault).or(d.arty)
+        def.or(buildable(d.raider)).or(buildable(d.skirm)).or(buildable(d.assault)).or(buildable(d.arty))
     }
 
     /// Air mix for an air factory: prefer the named fighter/scout when the
@@ -283,10 +308,10 @@ impl Army {
         }
         match role {
             Role::Raider => {
-                // Raid only when the target is (or we are) strong enough:
-                // local superiority at the target, or a full push. Otherwise
-                // hold the front — raiders that suicide into the enemy blob
-                // leave the mexes undefended.
+                // Raid only with a squad (>= 4 raiders nearby), a full push, or
+                // local superiority at the target. Raiders sent one by one
+                // stream into the enemy and die piecemeal; otherwise hold the
+                // front — that also leaves the mexes undefended.
                 let target = terr
                     .enemy_spots
                     .iter()
@@ -295,7 +320,14 @@ impl Army {
                     })
                     .copied()
                     .unwrap_or(ctx.enemy_target);
-                if ctx.opts.raiding && (push || threat.local_superiority(ctx, roles, target, 400.0, 600.0)) {
+                let squad = cb
+                    .team_units()
+                    .iter()
+                    .filter(|u| roles.get(&u.id()) == Some(&Role::Raider) && u.pos().distance_2d(me) < 800.0)
+                    .count();
+                if ctx.opts.raiding
+                    && (push || squad >= 4 || threat.local_superiority(ctx, roles, target, 400.0, 600.0))
+                {
                     unit.fight(target, opt::NONE);
                 } else {
                     unit.fight(terr.front, opt::NONE);

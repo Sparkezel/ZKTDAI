@@ -220,8 +220,12 @@ impl Defs {
             });
         let raider = get("cloakraid").or_else(|| get("vehraid")).or_else(|| get("shieldraid"));
         let skirm = get("cloakskirm").or_else(|| get("cloakriot")).or_else(|| get("vehriot"));
-        let assault = get("tankassault").or_else(|| get("shieldassault")).or_else(|| get("tankriot"));
-        let arty = get("tankarty").or_else(|| get("hoverarty"));
+        let assault = get("tankassault")
+            .or_else(|| get("shieldassault"))
+            .or_else(|| get("tankriot"))
+            .or_else(|| get("cloakassault"))
+            .or_else(|| get("cloakriot"));
+        let arty = get("tankarty").or_else(|| get("hoverarty")).or_else(|| get("cloakarty"));
         let mut scouts: Vec<UnitDef> = SCOUTS.iter().filter_map(|n| get(n)).collect();
         if let Some(cost) = metal {
             scouts.sort_by(|a, b| a.cost(cost).partial_cmp(&b.cost(cost)).unwrap_or(std::cmp::Ordering::Equal));

@@ -22,8 +22,13 @@ pub struct Territory {
     pub enemy_seen: Vec<i32>,
     /// Frame a mex order on this spot expired without a nanoframe appearing
     /// (silently denied — claimed spot, dead builder, blocked footprint).
-    /// -1 = never. Spots are re-considered after 7200 frames.
+    /// -1 = never. Spots are re-considered after 3600 frames.
     pub blocked: Vec<i32>,
+    /// Cluster id per spot (union-find over spots within 700 elmos) and each
+    /// cluster's centroid — CircuitAI expands cluster-by-cluster toward the
+    /// enemy via its cluster graph; we approximate with cluster anchors.
+    pub spot_cluster: Vec<usize>,
+    pub cluster_pos: Vec<Vec3>,
     /// Power-diagram weight per spot: `0.25 * min_pair_dist * clamp(metal/2,
     /// 0.5, 2.5)` — high-yield spots claim bigger cells, crowded spots smaller
     /// (same weighting as gui_metal_territories' BuildCells).
@@ -47,6 +52,8 @@ impl Territory {
             enemy: vec![false; n_spots],
             enemy_seen: vec![-1; n_spots],
             blocked: vec![-1; n_spots],
+            spot_cluster: Vec::new(),
+            cluster_pos: Vec::new(),
             weights: vec![0.0; n_spots],
             our_centroid: our_start,
             enemy_centroid: enemy_target,
@@ -149,6 +156,44 @@ impl Territory {
         if self.blocked.len() != ctx.spots.len() {
             self.blocked = vec![-1; ctx.spots.len()];
         }
+        if self.spot_cluster.len() != ctx.spots.len() {
+            // union-find over spots within 700 elmos, then compact to cluster ids
+            let n = ctx.spots.len();
+            let mut parent: Vec<usize> = (0..n).collect();
+            fn root(p: &mut [usize], mut i: usize) -> usize {
+                while p[i] != i {
+                    i = p[i];
+                }
+                i
+            }
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    if ctx.spots[i].distance_2d(ctx.spots[j]) <= 700.0 {
+                        let (ri, rj) = (root(&mut parent, i), root(&mut parent, j));
+                        if ri != rj {
+                            parent[ri] = rj;
+                        }
+                    }
+                }
+            }
+            let mut remap: HashMap<usize, usize> = HashMap::new();
+            let mut spot_cluster = vec![0usize; n];
+            for (i, c) in spot_cluster.iter_mut().enumerate() {
+                let r = root(&mut parent, i);
+                let next = remap.len();
+                *c = *remap.entry(r).or_insert(next);
+            }
+            let k = remap.len();
+            let mut sum = vec![(0.0f32, 0.0f32, 0usize); k];
+            for (s, &c) in ctx.spots.iter().zip(&spot_cluster) {
+                sum[c].0 += s.x;
+                sum[c].1 += s.z;
+                sum[c].2 += 1;
+            }
+            self.cluster_pos =
+                sum.into_iter().map(|(sx, sz, n)| Vec3::xz(sx / n.max(1) as f32, sz / n.max(1) as f32)).collect();
+            self.spot_cluster = spot_cluster;
+        }
         let mut nearest = f32::MAX;
         for a in &ctx.spots {
             for b in &ctx.spots {
@@ -184,7 +229,7 @@ impl Territory {
     /// (near our centroid, far from the enemy's), rate-limited to one per 30 s.
     /// True if the spot is not recently blocked by a failed mex order.
     pub fn not_blocked(&self, ctx: &Ctx, i: usize) -> bool {
-        self.blocked.get(i).copied().unwrap_or(-1) < 0 || ctx.frame - self.blocked[i] > 7200
+        self.blocked.get(i).copied().unwrap_or(-1) < 0 || ctx.frame - self.blocked[i] > 3600
     }
 
     /// Nearest owned (finished mex) spot to the front line. CircuitAI builds
