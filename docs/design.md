@@ -59,3 +59,26 @@ Offensive-defense. The AI's goals, in priority order:
 - **BARb / NullAI** — other bundled skirmish AIs; NullAI is the FFI smoke baseline.
 - Engine-level facts that shaped the code: `-write-dir`/`SpringData` data-dir layering;
   start-script keys `Gametype`/`Mapname`/`IsHost`; `EVENT_UNIT_IDLE` semantics above.
+- **Mex placement (learned from zkgbai + ZK's own gadgets, 2026-11-21)**: ZK's
+  `mex_placement.lua` gadget only allows a mex build command (`-mexDefID`) whose raw
+  position matches a published metal spot — exact `metalSpotsByPos[ceil(x)][ceil(z)]`
+  hit, or (for AI teams) within 50 elmos of an *unclaimed* spot. Those spots are the
+  gadget's own list, published as game rules params `mex_count` / `mex_x<i>` /
+  `mex_y<i>` / `mex_z<i>` (`mex_spot_finder.lua`), which can differ from the engine's
+  `Map_getResourceMapSpotsPositions`. So: **read spots from the rules params and issue
+  the mex build at the raw spot coords** (the engine snaps the footprint itself via
+  `Pos2BuildPos`); a snapped `find_closest_build_site` result can drift off the spot
+  and get silently denied in `AllowCommand` (never queued, no event — verified with a
+  queue probe). zkgbai does exactly this: `graph/mod.rs` parses `mex_*` rules params
+  and `economy/assign.rs` issues `unit.build(mex, spot_pos, …)` directly. Related ZK
+  facts: mexes carry `customParams.ismex = 1`, **not** the engine `extractsMetal` tag
+  (so `UnitDef_getExtractsResource` returns 0 for them — detect mexes via `ismex`);
+  the gadget also marks the 3×3 tiles around each spot in the building mask so only
+  mexes (`buildingMask = 0`) can build there; `GiveOrder` only *sends* the command over
+  the loopback net (returns 0 = sent, accepted or not), and a queued command whose
+  absolute `timeOut` frame passes is dropped with `CommandFinished`
+  (`MobileCAI::SlowUpdate`) — always pass `timeOut = INT_MAX`.
+- **Commander spawn vs sent start pos**: the engine may place the commander in a
+  startbox instead of the `SendStartPos` position (observed headless), so anchor
+  `our_start` to the commander's actual `UnitCreated` position and build the opening
+  factory next to the commander (`unit.pos()`), not at map centre.

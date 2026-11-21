@@ -85,17 +85,52 @@ Paste this into a fresh assistant session to continue. Repo: `Sparkezel/ZKTDAI`,
 - GitHub via `connector_github_app` tools (pull_request_read with method get/get_check_runs/get_comments,
   update_pull_request, add_issue_comment, list_issues). CI on PR #17 head: lint/test/smoke/package green.
 
-## 5. Immediate next steps
-1. Commit + push the uncommitted changes (ai.rs idle fix, tools/headless/*, this doc).
-2. Re-run 1 headless game at `-Speed 10` with the NEW dll (md5 d07e5c1a…): expect `unitCreated` > 1,
-   falling metal, `[planner]`/`[porc]` build logs, territory > 0. If still idle, check whether
-   `commander_idle`'s first `build_at` fails at map centre before `send_start` (the 120f sweep should
-   fix it — verify).
-3. Find the real game-over line for result parsing (inspect a finished game's infolog/console around
-   `<autoquit>`), fix run.ps1/run.sh parsing, then run the v0.2-vs-CircuitAI benchmark for issue #2
-   (several games, `-PostIssue 2`).
-4. Then continue v2 slices: #11 defense-printing half, #14 LuaUI widget (ZKTDAI_STATUS JSON exists),
-   #15 phase-3 encampments, #16 nuke project, #18 v0.3 archon.
+## 5. Status at 2026-11-21 (after `a72498d`, pushed to PR #17 head)
+- **The AI now actually plays.** All four opening bugs fixed and verified in real games:
+  1. *No builds*: `unitIdle` only fires when a command finishes → dispatch on `UnitFinished` +
+     120f idle sweep (was in `940eacf`), AND the f=0 build used map-centre as anchor while the
+     commander spawned in a startbox → anchor `our_start` to the commander's real `UnitCreated`
+     pos, build the opening factory at `unit.pos()`.
+  2. *No mexes*: ZK `mex_placement.lua` `AllowCommand` only accepts mex builds at a published
+     spot (rules params `mex_count`/`mex_x<i>`/`mex_y<i>`/`mex_z<i>`) or within 50 elmos of an
+     unclaimed one for AI teams. Engine metalmap spots ≠ gadget spots → denied silently (never
+     queued, no event). Fix: read spots from rules params in `Init`, `build_mex()` issues the
+     build at the raw spot coords. Stale denied orders self-clear every 1200f.
+  3. *No raiders / engineer flood*: factory built cons while `workers < want_cons` (up to 10) →
+     cap cons at 2 until combat ≥ 4 (`army.rs factory_idle`).
+  4. *No linking*: `plan_grid_pylons` places `energypylon` along base→opening-mexes chain where
+     gaps exceed pylon range (`pylonrange` custom param); wind still goes between mexes.
+  Also: mex detection via `customParams.ismex` (ZK mexes don't set `extractsMetal`), fixing
+  territory ownership (was 0% forever) and the 34220 priority command on mexes.
+- **Measured** (Altored Divide 1v1 vs CircuitAI:stable, `-Speed 10 -MaxFrames N`):
+  f=3600 (2 min): us 28 units/minc 14.0 vs CAI 23/14.5. f=9000 (5 min): us 49 units/minc 26.9/
+  combat 18/territory 12%/dmg 242 vs CAI 39/25.4 — **ahead on army, on par income**.
+  f=18000 (10 min): us 55 units/minc 10 (mexes raided, income collapsed) vs CAI 214/100.1 —
+  midgame snowball gap remains: only 4 mexes built (expansion too slow), air factory never
+  affordable (factoryplane ~700 > metal), no second factory. See design.md "Prior art" for
+  all engine/ZK facts.
+- Replays: `D:\1devving\zktdai-run4\demos\*.sdfz` (first building game =
+  `2026-11-21_08-05-13-378_...sdfz`; best = the 08-11-55 one). Watch via
+  `spring.exe --write-dir D:\1devving\zktdai-run4` (don't pollute the install) or copy into
+  `<install>\demos\`. Per-game logs: `out/infolog-gameN.txt`, `out/results.md`.
+- Early exit for fast iteration: `-MaxFrames 1800` = quit after 1 game-minute
+  (`quit_widget.lua` logs `ARENA_TIMEOUT` + `quitforce`); 0 = play to the end.
+- Probe tracing (behind `ZKTDAI_TRACE_EVENTS=1`): per-builder command queue + metal every 30f
+  (`[probe]`), def names on unitCreated/Finished, commandFinished cmd/topic, `build_at`/`build_mex`
+  lines always on.
+
+## 5b. Immediate next steps
+1. Midgame economy: expansion stalls at ~4 mexes (only 2 cons + commander building; each mex a
+   long round trip) and raids kill mexes (income 27→10 by f=18000). Raise con count once
+   combat ≥ 4 (already), speed up mex expansion, add lotus/picket at mex clusters (porc),
+   keep a metal reserve for the air factory.
+2. Air: air factory gate (`planner.rs base_step`, income≥30 or f≥15000, cost ~700) never
+   affordable after income collapse — fix #1 first; then verify `factoryplane` builds and
+   `army.rs next_air_unit` produces fighters/scouts (air mix code is in, untested in game).
+3. Benchmark v0.2 vs CircuitAI for issue #2 (several games; ARENA_GAMEOVER gives WIN/LOSS,
+   `-PostIssue 2`).
+4. Then v2 slices: #11 defense-printing half, #14 LuaUI widget, #15 encampments, #16 nuke,
+   #18 archon 16v16.
 
 ## 6. Technical facts (verified this session)
 - Engine CLI: `-write-dir <dir>` (all writes go there; write-dir config source is read),
