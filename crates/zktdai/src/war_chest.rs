@@ -196,9 +196,12 @@ impl WarChest {
         if amount > self.spendable(ctx) {
             return false;
         }
+        // Window cap: at least one purchase per window goes through even if it
+        // overshoots the cap (a single unit usually costs more than the cap),
+        // otherwise expensive units would be blocked forever at low income.
         if !kind.is_high_priority()
             && let Some((spent, cap)) = self.window_cap(ctx, kind)
-            && spent + amount > cap.max(1.0)
+            && spent >= cap.max(1.0)
         {
             return false;
         }

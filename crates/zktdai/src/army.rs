@@ -114,7 +114,9 @@ impl Army {
             && cb.economy().current(metal) >= con.cost(metal)
         {
             let pos = factory.pos();
-            factory.build(con, pos, 0, opt::NONE);
+            if factory.build(con, pos, 0, opt::NONE) {
+                cb.log(&format!("[army] factory {} builds con (workers {workers}/{con_cap})", factory.id()));
+            }
             return;
         }
         // air factories (factoryplane/factorygunship) build the air mix:
@@ -122,17 +124,36 @@ impl Army {
         let air = factory.def().is_some_and(is_air_factory);
         let Some(def) = self.next_unit(ctx, air, factory.def()) else { return };
         let cost = def.cost(metal);
-        if cb.economy().current(metal) < cost {
+        let cur = cb.economy().current(metal);
+        if cur < cost {
+            if ctx.frame % 600 == 0 {
+                cb.log(&format!(
+                    "[army] factory {} waits: want {} cost {:.0} cur {:.0}",
+                    factory.id(),
+                    def.name(),
+                    cost,
+                    cur
+                ));
+            }
             return;
         }
         // normal bucket: army production is capped at `army_share` of income per
         // window (greedy below 10 m/s); the rest floats as reserve or feeds porc
         if !war.can_spend(ctx, ProjectKind::Army, cost) {
+            if ctx.frame % 600 == 0 {
+                cb.log(&format!(
+                    "[army] factory {} blocked by war chest: want {} cost {:.0}",
+                    factory.id(),
+                    def.name(),
+                    cost
+                ));
+            }
             return;
         }
         let pos = factory.pos();
         if factory.build(def, pos, 0, opt::NONE) {
             war.note_spend(ProjectKind::Army, cost);
+            cb.log(&format!("[army] factory {} builds {} ({:.0} metal)", factory.id(), def.name(), cost));
         }
     }
 
