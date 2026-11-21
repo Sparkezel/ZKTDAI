@@ -171,8 +171,9 @@ impl Porc {
             }
         }
 
-        // basic front ditch
-        if ctx.frame >= self.next_ditch {
+        // basic front ditch (disabled by default: early front = map-centre
+        // estimate, so this digs the midmap — option `ditch` re-enables it)
+        if ctx.opts.ditch && ctx.frame >= self.next_ditch {
             self.ditch(ctx, roles, terr);
             self.next_ditch = ctx.frame + 1500;
         }
@@ -211,7 +212,10 @@ impl Porc {
         }
         let dir = terr.enemy_centroid - terr.our_centroid;
         let len = dir.length_2d().max(1.0);
-        let want = terr.front + dir * (-250.0 / len);
+        // before any enemy mex is seen, the front is just the map-centre
+        // estimate — build at home, not midmap
+        let any_enemy_mex = terr.enemy.iter().any(|e| *e);
+        let want = if any_enemy_mex { terr.front + dir * (-250.0 / len) } else { ctx.our_start };
         let site = cb.map().find_closest_build_site(def, want, 350.0, 0, 0);
         if site.x < 0.0 {
             return None;

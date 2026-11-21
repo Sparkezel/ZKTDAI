@@ -33,6 +33,10 @@ pub struct Opts {
     pub push_size: i32,
     pub raiding: bool,
     pub porc: bool,
+    /// Front-line terraforming ditch (porc). Off by default for now: early
+    /// game the front is just the map-centre estimate, so workers ditch the
+    /// midmap instead of expanding.
+    pub ditch: bool,
     pub sabotage: bool,
     /// Porc may spend at most this fraction of metal income per window.
     pub porc_budget_pct: f32,
@@ -117,6 +121,7 @@ impl SkirmishAi for Zktdai {
             territory_share: cb.option("territory_share").and_then(|v| v.parse().ok()).unwrap_or(50.0),
             push_size: cb.option("push_size").and_then(|v| v.parse().ok()).unwrap_or(12),
             raiding: bool_opt(cb, "raiding", true),
+            ditch: bool_opt(cb, "ditch", false),
             porc: bool_opt(cb, "porc", true),
             sabotage: bool_opt(cb, "sabotage", true),
             porc_budget_pct: cb.option("porc_budget_pct").and_then(|v| v.parse().ok()).unwrap_or(20.0) / 100.0,
