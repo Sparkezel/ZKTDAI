@@ -60,6 +60,8 @@ pub struct Ctx {
     pub frame: i32,
     /// Metal spot positions, in elmos.
     pub spots: Vec<Vec3>,
+    /// Metal yield per spot (`mex_metal<i>` rules param, default 2.0).
+    pub spot_metal: Vec<f32>,
     pub our_start: Vec3,
     /// Estimated enemy base (our start mirrored across the map centre).
     pub enemy_target: Vec3,
@@ -149,6 +151,7 @@ impl SkirmishAi for Zktdai {
                 energy,
                 frame: 0,
                 spots: Vec::new(),
+                spot_metal: Vec::new(),
                 our_start: centre,
                 enemy_target: centre,
                 wind_min: 0.0,
@@ -222,6 +225,7 @@ impl SkirmishAi for Zktdai {
                             )
                         })
                         .collect();
+                    self.ctx.spot_metal = (1..=n).map(|i| g.rules_param_float(&format!("mex_metal{i}"), 2.0)).collect();
                     cb.log(&format!("[zktdai] {n} metal spots from rules params"));
                 }
                 if self.ctx.spots.is_empty()
