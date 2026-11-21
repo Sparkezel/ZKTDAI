@@ -4,7 +4,8 @@ use crate::{Callback, UnitDef, Vec3};
 
 handle!(
     /// A map feature: wreck, rock, tree, ...
-    Feature, feature_id
+    Feature,
+    feature_id
 );
 
 getters!(Feature.feature_id {
@@ -37,7 +38,8 @@ impl Feature {
 
 handle!(
     /// A feature type definition.
-    FeatureDef, def_id
+    FeatureDef,
+    def_id
 );
 
 getters!(FeatureDef.def_id {

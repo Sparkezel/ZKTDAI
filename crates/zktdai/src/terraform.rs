@@ -1,0 +1,105 @@
+//! Terraform helper around Zero-K's `unit_terraform.lua` gadget.
+//!
+//! Issue custom command 39801 (`CMD_TERRAFORM_INTERNAL`) to ONE builder with the
+//! full shape (kind, team, centre, tag, area flag, height, point count, builder
+//! count, volume change, then point x,z pairs, then builder ids), and 39737
+//! (`CMD_RAISE`) to EVERY builder with the same tag. The gadget spawns invisible
+//! `terraunit` helpers at the points; builders repair them and the heightmap is
+//! written incrementally from the metal spent (`DoTerraformUpdate` ->
+//! `Spring.SetHeightMap`). Digs are cancelled when enemies approach and idle
+//! terraunits decay, so callers should track the tag and re-issue if needed.
+//!
+//! Kinds: `KIND_RAISE` (2.0) raises/lowers by `height` elmos with a pyramid
+//! skirt — pits/ditches use negative heights; `KIND_LEVEL` (1.0) levels to the
+//! absolute `height` (flat top) — walls and platforms. Tags count from `1<<20`:
+//! the AI's own, while widgets/players count from 1 (same convention as
+//! zkgbai-rs).
+
+use std::sync::atomic::{AtomicI32, Ordering};
+
+use springai::{Callback, NO_TIMEOUT, Unit, Vec3, opt};
+
+use crate::defs::cmd;
+
+/// AI terraform tags count from here; widgets/players count from 1.
+const FIRST_TAG: i32 = 1 << 20;
+
+static NEXT_TAG: AtomicI32 = AtomicI32::new(FIRST_TAG);
+
+/// Unique terraform job tag: the gadget keys pending jobs by (team, tag), so a
+/// reused tag overwrites the previous job.
+pub fn next_tag() -> i32 {
+    NEXT_TAG.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Raise/lower along the `points` line by `height` elmos (negative digs).
+pub fn terraform(cb: Callback, builders: &[Unit], points: &[Vec3], height: f32, tag: i32) -> bool {
+    terraform_kind(cb, builders, points, height, tag, cmd::KIND_RAISE, false)
+}
+
+/// Level along the `points` line to the absolute `height` (flat top).
+pub fn terraform_level(cb: Callback, builders: &[Unit], points: &[Vec3], height: f32, tag: i32) -> bool {
+    terraform_kind(cb, builders, points, height, tag, cmd::KIND_LEVEL, false)
+}
+
+fn terraform_kind(
+    cb: Callback,
+    builders: &[Unit],
+    points: &[Vec3],
+    height: f32,
+    tag: i32,
+    kind: f32,
+    area: bool,
+) -> bool {
+    let Some(&first) = builders.first() else { return false };
+    if points.len() < 2 {
+        return false;
+    }
+    let n = points.len() as f32;
+    let (cx, cz) = points.iter().fold((0.0, 0.0), |(x, z), p| (x + p.x / n, z + p.z / n));
+    let mut params = vec![
+        kind,
+        cb.game().my_team() as f32,
+        cx,
+        cz,
+        tag as f32,
+        if area { 1.0 } else { 0.0 }, // closed area, or a line
+        height,
+        n,
+        builders.len() as f32,
+        0.0, // any volume change
+    ];
+    params.extend(points.iter().flat_map(|p| [p.x, p.z]));
+    params.extend(builders.iter().map(|b| b.id() as f32));
+    if !first.execute_custom_command(cmd::TERRAFORM_INTERNAL, &params, opt::NONE, NO_TIMEOUT) {
+        return false;
+    }
+    let y = cb.map().elevation_at(cx, cz);
+    for b in builders {
+        b.execute_custom_command(cmd::RAISE, &[cx, y, cz, tag as f32], opt::NONE, NO_TIMEOUT);
+    }
+    true
+}
+
+/// Points along the segment `from` -> `to`, spaced `step` elmos apart.
+pub fn line_points(from: Vec3, to: Vec3, step: f32) -> Vec<Vec3> {
+    let dir = to - from;
+    let len = dir.length_2d().max(1.0);
+    let n = (len / step).floor().max(1.0) as i32;
+    (0..=n).map(|k| Vec3::xz(from.x + dir.x * k as f32 / n as f32, from.z + dir.z * k as f32 / n as f32)).collect()
+}
+
+/// Points on an arc of radius `r` around `center`, centred on the direction
+/// `toward`, spanning `arc_deg` degrees total, spaced `step` elmos apart.
+pub fn arc_points(center: Vec3, toward: Vec3, r: f32, arc_deg: f32, step: f32) -> Vec<Vec3> {
+    let base = toward.z.atan2(toward.x); // angle of `toward` in the xz plane
+    let half = arc_deg.to_radians() / 2.0;
+    let arc_len = 2.0 * half * r;
+    let n = (arc_len / step).floor().max(1.0) as i32;
+    (0..=n)
+        .map(|k| {
+            let a = base - half + (2.0 * half) * k as f32 / n as f32;
+            Vec3::xz(center.x + a.cos() * r, center.z + a.sin() * r)
+        })
+        .collect()
+}

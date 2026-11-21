@@ -31,13 +31,54 @@ Offensive-defense. The AI's goals, in priority order:
 | Perimeter porc + terraform | `crates/zktdai/src/porc.rs` | `crates/zkgbai/src/economy/porc_policy.rs`, `fortify.rs`, `terraform.rs`, `crates/terrain/src/fortify.rs` (site scoring, ditch value, chokepoints) |
 | Sabotage / surgical strikes | `crates/zktdai/src/sabotage.rs` | `crates/zkgbai/src/military/strikes/` (opportunities, prediction, evasion), `airstrikes/`, `handlers/misc/sappers/` (cloaked strikes) |
 | Raiders / skirm / assault / artillery | `crates/zktdai/src/army.rs` | `crates/zkgbai/src/military/handlers/{raider,squad,precision}.rs`, `military/taskforce/` (army composition doctrine), `military/fightsim/` (when to fight vs retreat) |
-| Enemy tracking, threat, AA-from-bearings | (partly in `territory.rs` / `sabotage.rs`) | `crates/zkgbai/src/military/enemy.rs`, `intel.rs`, `radar.rs` |
+| Enemy tracking, threat, AA-from-bearings | `crates/zktdai/src/threat.rs` (threatmap v0: radar/LOS sightings, incursion ETAs, local superiority), `sabotage.rs` (critical-static last-seen) | `crates/zkgbai/src/military/enemy.rs`, `intel.rs`, `radar.rs`, `crates/terrain/src/threat.rs` |
 
 ## Development loop
 
 1. `cargo build --release -p zktdai` + `cargo test` + `tools/dll-smoke` (see README).
 2. Headless matches in WSL2 with `reference/zkgbai-rs/tools/arena/{match,series}.sh` against
    CircuitAI and self-play mirrors; read `infolog.txt` (`[zktdai]`, `[army]`, `[porc]`,
-   `[sabotage]` lines) and the `RESULT` line.
+   `[sabotage]` lines) and the `RESULT` line. On a Windows box with an existing install, use
+   `tools/headless/run.ps1 -ZkInstall <path-to-Zero-K> -Games N -Speed 10` (read-only; all
+   outputs in the work dir).
 3. Port a module at a time from `reference/zkgbai-rs/`; keep the module boundaries above so
    behavior stays readable.
+
+## Prior art (what already exists that we build on or learn from)
+
+- **zkgbai-rs (Anarchid)** — the direct ancestor: vendored wrapper (`springai`, `checkpoint`) plus
+  the doctrine modules we port (`economy/*`, `military/*`, `crates/terrain`). Two lessons we
+  re-learned the hard way this session: (a) the engine only sends `unitIdle` when a command
+  *finishes* (Recoil `CommandAI.cpp`), so **zkgbai issues the commander's first order on
+  `UnitFinished`** (`eco_unit_finished` assigns a task immediately) and re-assigns workers every
+  frame from an idlers queue (`economy/assign.rs`); (b) its arena harness (`tools/arena/match.sh`)
+  runs `spring-headless --write-dir <private dir> <script.txt>` with `IsHost=1` and
+  `[MODOPTIONS] MinSpeed/MaxSpeed` for sim speed — the same recipe our `tools/headless` now uses.
+- **CircuitAI** (bundled in every install, `AI/Skirmish/…CircuitAI…/stable`) — the benchmark
+  opponent (issue #2 baseline); AngelScript, mature porc/eco; not a model for our architecture.
+- **BARb / NullAI** — other bundled skirmish AIs; NullAI is the FFI smoke baseline.
+- Engine-level facts that shaped the code: `-write-dir`/`SpringData` data-dir layering;
+  start-script keys `Gametype`/`Mapname`/`IsHost`; `EVENT_UNIT_IDLE` semantics above.
+- **Mex placement (learned from zkgbai + ZK's own gadgets, 2026-11-21)**: ZK's
+  `mex_placement.lua` gadget only allows a mex build command (`-mexDefID`) whose raw
+  position matches a published metal spot — exact `metalSpotsByPos[ceil(x)][ceil(z)]`
+  hit, or (for AI teams) within 50 elmos of an *unclaimed* spot. Those spots are the
+  gadget's own list, published as game rules params `mex_count` / `mex_x<i>` /
+  `mex_y<i>` / `mex_z<i>` (`mex_spot_finder.lua`), which can differ from the engine's
+  `Map_getResourceMapSpotsPositions`. So: **read spots from the rules params and issue
+  the mex build at the raw spot coords** (the engine snaps the footprint itself via
+  `Pos2BuildPos`); a snapped `find_closest_build_site` result can drift off the spot
+  and get silently denied in `AllowCommand` (never queued, no event — verified with a
+  queue probe). zkgbai does exactly this: `graph/mod.rs` parses `mex_*` rules params
+  and `economy/assign.rs` issues `unit.build(mex, spot_pos, …)` directly. Related ZK
+  facts: mexes carry `customParams.ismex = 1`, **not** the engine `extractsMetal` tag
+  (so `UnitDef_getExtractsResource` returns 0 for them — detect mexes via `ismex`);
+  the gadget also marks the 3×3 tiles around each spot in the building mask so only
+  mexes (`buildingMask = 0`) can build there; `GiveOrder` only *sends* the command over
+  the loopback net (returns 0 = sent, accepted or not), and a queued command whose
+  absolute `timeOut` frame passes is dropped with `CommandFinished`
+  (`MobileCAI::SlowUpdate`) — always pass `timeOut = INT_MAX`.
+- **Commander spawn vs sent start pos**: the engine may place the commander in a
+  startbox instead of the `SendStartPos` position (observed headless), so anchor
+  `our_start` to the commander's actual `UnitCreated` position and build the opening
+  factory next to the commander (`unit.pos()`), not at map centre.

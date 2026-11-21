@@ -4,7 +4,8 @@ use crate::{Callback, WeaponDef};
 
 handle!(
     /// A unit type definition.
-    UnitDef, def_id
+    UnitDef,
+    def_id
 );
 
 getters!(UnitDef.def_id {
