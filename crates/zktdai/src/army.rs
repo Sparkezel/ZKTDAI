@@ -105,7 +105,7 @@ impl Army {
         // But don't flood cons before the army exists: hold at 2 cons until we
         // have a few combat units, then let the planner's number through.
         let combat = roles.values().filter(|r| r.is_combat()).count();
-        let con_cap = if combat < 4 { 3 } else { want_cons };
+        let con_cap = if combat < 4 { 4 } else { want_cons };
         let workers =
             cb.team_units().iter().filter(|u| roles.get(&u.id()) == Some(&Role::Worker) && !u.is_being_built()).count();
         if workers < con_cap

@@ -331,7 +331,19 @@ impl SkirmishAi for Zktdai {
                     // for a while, or one con burns the whole game on one spot.
                     for i in expired {
                         self.terr.blocked[i] = frame;
-                        cb.log(&format!("[zktdai] mex order on spot {i} expired unbuilt, blocking for 7200f"));
+                        let spot = spots[i];
+                        let enemy_mex = cb
+                            .enemy_units_in_radar_and_los()
+                            .iter()
+                            .filter(|e| e.def().is_some_and(|d| self.ctx.is_mex(d)))
+                            .map(|e| e.pos().distance_2d(spot))
+                            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                        cb.log(&format!(
+                            "[zktdai] mex order on spot {i} ({:.0},{:.0}) expired unbuilt (nearest enemy mex {:.0}), blocking 3600f",
+                            spot.x,
+                            spot.z,
+                            enemy_mex.unwrap_or(-1.0)
+                        ));
                     }
                 }
                 if frame % 120 == 0 {
