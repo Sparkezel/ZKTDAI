@@ -22,6 +22,11 @@ const OPENING_SCOUTS: usize = 2;
 /// production for the first fusion (plan round 4 #4: gate on the threatmap).
 const FUSION_PAUSE_SAFE_RADIUS: f32 = 1500.0;
 
+/// Is this factory an air factory (builds flying units)?
+fn is_air_factory(d: UnitDef) -> bool {
+    d.name().contains("plane") || d.name().contains("gunship") || d.build_options().iter().any(|o| o.is_able_to_fly())
+}
+
 pub struct Army {
     cycle: usize,
     scout_ids: HashSet<i32>,
@@ -50,7 +55,7 @@ impl Army {
         if d.is_able_to_move() {
             return;
         }
-        let is_mex = ctx.metal.is_some_and(|m| d.extracts_resource(m) > 0.0);
+        let is_mex = ctx.is_mex(d);
         if is_mex || d.name().starts_with("factory") {
             self.last_enemy_eco_seen = ctx.frame;
         }
@@ -97,9 +102,13 @@ impl Army {
         // constructors: the planner decides how many we want (energy / base /
         // expansion / reclaim jobs). Only factories/plates/athena/engineer-com
         // can build cons, and only after a factory is placed (first is free).
+        // But don't flood cons before the army exists: hold at 2 cons until we
+        // have a few combat units, then let the planner's number through.
+        let combat = roles.values().filter(|r| r.is_combat()).count();
+        let con_cap = if combat < 4 { 2 } else { want_cons };
         let workers =
             cb.team_units().iter().filter(|u| roles.get(&u.id()) == Some(&Role::Worker) && !u.is_being_built()).count();
-        if workers < want_cons
+        if workers < con_cap
             && let Some(con) = ctx.defs.con
             && war.can_spend(ctx, ProjectKind::Expansion, con.cost(metal))
             && cb.economy().current(metal) >= con.cost(metal)
@@ -108,7 +117,10 @@ impl Army {
             factory.build(con, pos, 0, opt::NONE);
             return;
         }
-        let Some(def) = self.next_unit(ctx) else { return };
+        // air factories (factoryplane/factorygunship) build the air mix:
+        // mostly fighters (Swift), every 4th a flying scout (Sparrow)
+        let air = factory.def().is_some_and(is_air_factory);
+        let Some(def) = self.next_unit(ctx, air, factory.def()) else { return };
         let cost = def.cost(metal);
         if cb.economy().current(metal) < cost {
             return;
@@ -126,7 +138,11 @@ impl Army {
 
     /// Production weights per 100 builds: raiders dominate the opening
     /// (box-in; the first 2 scout), then the army shifts to skirm/assault/arty.
-    fn next_unit(&mut self, ctx: &Ctx) -> Option<UnitDef> {
+    /// Air factories instead cycle fighters with a scout share.
+    fn next_unit(&mut self, ctx: &Ctx, air: bool, fac: Option<UnitDef>) -> Option<UnitDef> {
+        if air {
+            return self.next_air_unit(ctx, fac);
+        }
         let d = &ctx.defs;
         let (wr, ws, wa, wt): (i32, i32, i32, i32) = if ctx.frame < 6000 { (70, 25, 0, 5) } else { (25, 30, 25, 20) };
         let total = wr + ws + wa + wt;
@@ -142,6 +158,23 @@ impl Army {
             d.arty
         };
         def.or(d.raider).or(d.skirm).or(d.assault).or(d.arty)
+    }
+
+    /// Air mix for an air factory: prefer the named fighter/scout when the
+    /// factory can build them, else any flying option; every 4th build is a
+    /// scout. Falls back to the ground mix when nothing flies.
+    fn next_air_unit(&mut self, ctx: &Ctx, fac: Option<UnitDef>) -> Option<UnitDef> {
+        let opts: Vec<UnitDef> = fac.map(|d| d.build_options()).unwrap_or_default();
+        let flying: Vec<UnitDef> = opts.iter().copied().filter(|o| o.is_able_to_fly()).collect();
+        let in_opts = |d: Option<UnitDef>| d.filter(|d| opts.is_empty() || opts.contains(d));
+        let scout =
+            in_opts(ctx.defs.air_scout).or_else(|| flying.iter().copied().find(|o| ctx.defs.role(*o).is_scout()));
+        let fighter = in_opts(ctx.defs.air)
+            .or_else(|| flying.iter().copied().find(|o| o.is_able_to_attack() && !ctx.defs.role(*o).is_scout()));
+        let fighter = fighter.or(scout);
+        self.cycle += 1;
+        let def = if self.cycle.is_multiple_of(4) { scout.or(fighter) } else { fighter.or(scout) };
+        def.or_else(|| self.next_unit(ctx, false, fac))
     }
 
     pub fn combat_idle(&mut self, ctx: &Ctx, unit: Unit, role: Role, terr: &Territory, push: bool, fob: Option<Vec3>) {

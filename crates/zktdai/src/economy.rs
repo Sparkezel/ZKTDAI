@@ -21,11 +21,58 @@ pub fn build_at(cb: Callback, unit: Unit, def: UnitDef, want: Vec3, search_radiu
         return false;
     }
     let y = cb.map().elevation_at(site.x, site.z);
-    unit.build(def, Vec3::new(site.x, y, site.z), 0, opt::NONE)
+    cb.log(&format!(
+        "[eco] build_at {} unit={} at ({:.0},{:.0}) from ({:.0},{:.0}) dist={:.0} want ({:.0},{:.0})",
+        def.name(),
+        unit.id(),
+        site.x,
+        site.z,
+        unit.pos().x,
+        unit.pos().z,
+        unit.pos().distance_2d(site),
+        want.x,
+        want.z
+    ));
+    let ok = unit.build(def, Vec3::new(site.x, y, site.z), 0, opt::NONE);
+    if !ok {
+        cb.log(&format!(
+            "[eco] build {} by unit {} REJECTED (site {:.0},{:.0})",
+            def.name(),
+            unit.id(),
+            site.x,
+            site.z
+        ));
+    }
+    ok
+}
+
+/// Order a mex exactly on its spot position. ZK's mex-placement gadget only
+/// allows mex builds whose (raw) position matches a published metal spot — or,
+/// for AI teams, is within 50 elmos of an unclaimed one — so building at the
+/// raw spot coords (which match the rules params we read in Init) is what gets
+/// accepted; the engine snaps the footprint itself. Falls back to a nearby
+/// snapped site if the direct order is refused.
+pub fn build_mex(cb: Callback, unit: Unit, mex: UnitDef, spot: Vec3) -> bool {
+    if unit.build(mex, spot, 0, opt::NONE) {
+        cb.log(&format!(
+            "[eco] build_mex {} unit={} at spot ({:.1},{:.1}) direct",
+            mex.name(),
+            unit.id(),
+            spot.x,
+            spot.z
+        ));
+        return true;
+    }
+    build_at(cb, unit, mex, spot, 64.0)
 }
 
 fn current_metal(ctx: &Ctx) -> f32 {
     ctx.metal.map(|m| ctx.cb.economy().current(m)).unwrap_or(0.0)
+}
+
+/// Debug cadence for one-shot logs: every 600 frames.
+fn frame_dbg(ctx: &Ctx) -> bool {
+    ctx.frame % 600 == 0
 }
 
 pub fn metal_cost(ctx: &Ctx, def: UnitDef) -> f32 {
@@ -70,6 +117,10 @@ pub struct Economy {
     opening_mexes: Vec<usize>,
     wind_built: usize,
     solars_built: usize,
+    /// Pylon positions linking the opening mexes into the energy grid
+    /// (base -> mex1 -> mex2 -> ...), computed when the mexes are chosen.
+    grid_pylons: Vec<Vec3>,
+    pylons_built: usize,
     /// The single home lotus (near factory/mexes) is built once.
     lotus_built: bool,
 }
@@ -81,8 +132,31 @@ impl Economy {
             opening_mexes: Vec::new(),
             wind_built: 0,
             solars_built: 0,
+            grid_pylons: Vec::new(),
+            pylons_built: 0,
             lotus_built: false,
         }
+    }
+
+    /// Pylon positions spaced along the chain base -> each opening mex, so
+    /// every mex ends up inside the energy grid (mex overdrive needs it).
+    fn plan_grid_pylons(ctx: &Ctx, opening_mexes: &[usize]) -> Vec<Vec3> {
+        let Some(pylon) = ctx.defs.pylon else { return Vec::new() };
+        let range =
+            pylon.custom_param("pylonrange").and_then(|s| s.trim().parse::<f32>().ok()).unwrap_or(450.0).max(64.0);
+        let mut chain = vec![ctx.our_start];
+        chain.extend(opening_mexes.iter().map(|i| ctx.spots[*i]));
+        let mut out = Vec::new();
+        for w in chain.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let dist = a.distance_2d(b);
+            let steps = (dist / (range * 0.9)).ceil().max(1.0) as i32;
+            for s in 1..steps {
+                let t = s as f32 / steps as f32;
+                out.push(Vec3::xz(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t));
+            }
+        }
+        out
     }
 
     pub fn commander_idle(
@@ -102,10 +176,30 @@ impl Economy {
         match self.opening {
             Opening::Factory => {
                 if let Some(f) = ctx.defs.factory {
-                    if war.can_spend(ctx, ProjectKind::Expansion, metal_cost(ctx, f))
-                        && cur >= metal_cost(ctx, f)
-                        && build_at(cb, unit, f, ctx.our_start, 400.0)
-                    {
+                    // The first factory is free (ZK gadget discount): don't gate
+                    // it on `cur >= cost` — with the storage cap pinning metal
+                    // below the nominal cost we would never build anything.
+                    let first_free = !roles.values().any(|r| *r == Role::Factory);
+                    let cost = if first_free { 0.0 } else { metal_cost(ctx, f) };
+                    if frame_dbg(ctx) {
+                        cb.log(&format!(
+                            "[eco] com idle f={} opening=factory def={} cost={:.0} cur={:.0} first_free={first_free}",
+                            ctx.frame,
+                            f.name(),
+                            metal_cost(ctx, f),
+                            cur
+                        ));
+                    }
+                    // Build next to the commander's real position: at f=0 the
+                    // sent start pos may not match where the engine actually
+                    // spawned us, and ctx.our_start can still be map centre.
+                    let built = war.can_spend(ctx, ProjectKind::Expansion, cost)
+                        && (first_free || cur >= cost)
+                        && build_at(cb, unit, f, unit.pos(), 400.0);
+                    if frame_dbg(ctx) || built {
+                        cb.log(&format!("[eco] factory build attempt f={} built={built}", ctx.frame));
+                    }
+                    if built {
                         // capture the 3 surrounding mexes for the wind grid
                         let mut spots: Vec<usize> =
                             (0..ctx.spots.len()).filter(|i| !terr.owned[*i] && !terr.enemy[*i]).collect();
@@ -142,20 +236,32 @@ impl Economy {
                     return;
                 };
                 if self.opening_mexes.iter().all(|i| ordered.contains(i) || terr.owned[*i]) {
+                    self.grid_pylons = Self::plan_grid_pylons(ctx, &self.opening_mexes);
                     self.opening = Opening::WindGrid;
                     return;
                 }
                 // tandem: workers take the same spots via expansion_spot
                 if let Some(i) = self.opening_mexes.iter().copied().find(|i| !ordered.contains(i) && !terr.owned[*i])
                     && cur >= metal_cost(ctx, mex)
-                    && build_at(cb, unit, mex, ctx.spots[i], 128.0)
+                    && build_mex(cb, unit, mex, ctx.spots[i])
                 {
                     ordered.insert(i);
                 }
                 return;
             }
             Opening::WindGrid => {
-                // 6 turbines linking the surrounding mexes, only on windy maps
+                // First link the mexes into the energy grid: one pylon per
+                // planned position along base -> mex chain.
+                if let Some(pylon) = ctx.defs.pylon
+                    && let Some(p) = self.grid_pylons.get(self.pylons_built).copied()
+                    && war.can_spend(ctx, ProjectKind::Energy, metal_cost(ctx, pylon))
+                    && cur >= metal_cost(ctx, pylon)
+                    && build_at(cb, unit, pylon, p, 160.0)
+                {
+                    self.pylons_built += 1;
+                    return;
+                }
+                // Then turbines between the surrounding mexes, only on windy maps
                 if ctx.wind_max >= 0.6 * 2.5
                     && self.wind_built < 6
                     && let Some(wind) = ctx.defs.wind
@@ -207,7 +313,7 @@ impl Economy {
             && let Some(i) = terr.expansion_spot(ctx, ordered)
             && war.can_spend(ctx, ProjectKind::Expansion, metal_cost(ctx, mex))
             && cur >= metal_cost(ctx, mex)
-            && build_at(cb, unit, mex, ctx.spots[i], 128.0)
+            && build_mex(cb, unit, mex, ctx.spots[i])
         {
             ordered.insert(i);
             return;
@@ -274,7 +380,7 @@ impl Economy {
         if let Some(i) = terr.expansion_spot(ctx, ordered)
             && war.can_spend(ctx, ProjectKind::Expansion, metal_cost(ctx, mex))
             && cur >= metal_cost(ctx, mex)
-            && build_at(cb, unit, mex, ctx.spots[i], 128.0)
+            && build_mex(cb, unit, mex, ctx.spots[i])
         {
             ordered.insert(i);
             return;

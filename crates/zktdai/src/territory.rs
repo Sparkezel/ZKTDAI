@@ -62,7 +62,7 @@ impl Territory {
         for u in cb.team_units() {
             let Some(d) = u.def() else { continue };
             if !d.is_able_to_move()
-                && d.extracts_resource(metal) > 0.0
+                && ctx.is_mex(d)
                 && let Some(i) = self.nearest_spot(ctx, u.pos(), radius)
             {
                 self.owned[i] = true;
@@ -75,7 +75,7 @@ impl Territory {
         for e in cb.enemy_units_in_radar_and_los() {
             let Some(d) = e.def() else { continue };
             if !d.is_able_to_move()
-                && d.extracts_resource(metal) > 0.0
+                && ctx.is_mex(d)
                 && let Some(i) = self.nearest_spot(ctx, e.pos(), radius)
             {
                 self.enemy[i] = true;

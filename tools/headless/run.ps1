@@ -37,6 +37,7 @@ param(
     [int]$StartPos = 2,                     # 0 random, 1 fixed, 2 chosen (AIs send start pos)
     [int]$MaxUnits = 2000,
     [int]$Speed = 1,                        # sim speed multiplier via [MODOPTIONS] MinSpeed/MaxSpeed (e.g. 10)
+    [int]$MaxFrames = 0,                    # quit the game after this many sim frames (0 = play to the end); 1800 = 1 game-minute
     [int]$Port = 0,                         # host UDP port (0 = 8452 + pid-derived, for parallel runs)
     [string]$CpuMask = "",                  # hex process-affinity mask, e.g. "10" = core 4; give each parallel run its own core(s)
     [int]$TimeoutSec = 1800,
@@ -206,6 +207,12 @@ $tpl = $tpl -replace '@GAMETYPE@', $GameType -replace '@MAP@', $MapName -replace
     -replace '@OPP_VERSION@', $OppVer
 $tpl | Set-Content "$WorkDir\script.txt"
 
+# arena reporter widget: ARENA_* stats/outcome lines in the infolog + quitforce
+# at MaxFrames (adapted from zkgbai-rs tools/arena/arena_widget.lua)
+New-Item -ItemType Directory -Force -Path "$WorkDir\LuaUI\Widgets" | Out-Null
+(Get-Content "$RepoRoot\tools\headless\quit_widget.lua" -Raw) -replace '@MAX_FRAMES@', "$MaxFrames" |
+    Set-Content "$WorkDir\LuaUI\Widgets\zktdai_arena_reporter.lua"
+
 Write-Host "== running $Games game(s)"
 $results = Join-Path $Out "results.md"
 "| game | map | opponent | result | frames | exit |" | Set-Content $results
@@ -241,10 +248,19 @@ for ($i = 1; $i -le $Games; $i++) {
     $res = "?"
     $frames = "?"
     if (Test-Path $log) {
-        $line = Select-String -Path $log -Pattern '(?i)game over' | Select-Object -First 1
-        if ($line) { $over = $line.Line.Trim() }
-        # ZKTDAI is allyteam 0: if allyteam 1 met the game-over conditions, we won
-        if ($over -match 'Allyteam 1') { $res = "WIN" } elseif ($over -match 'Allyteam 0') { $res = "LOSS" }
+        # preferred: the arena widget's lines (ZKTDAI is allyteam 0)
+        $go = Select-String -Path $log -Pattern 'ARENA_GAMEOVER' | Select-Object -First 1
+        $to = Select-String -Path $log -Pattern 'ARENA_TIMEOUT' | Select-Object -First 1
+        if ($go) {
+            $over = $go.Line.Trim()
+            if ($over -match 'winners=([0-9,]*)' -and ($Matches[1].Split(',') -contains '0')) { $res = "WIN" } else { $res = "LOSS" }
+        } elseif ($to) {
+            $over = "$($to.Line.Trim()) (frame cap)"; $res = "TIMEOUT"
+        } else {
+            $line = Select-String -Path $log -Pattern '(?i)game over' | Select-Object -First 1
+            if ($line) { $over = $line.Line.Trim() }
+            if ($over -match 'Allyteam 1') { $res = "WIN" } elseif ($over -match 'Allyteam 0') { $res = "LOSS" }
+        }
         $f = [regex]::Matches((Get-Content $log -Raw), 'f=[-0-9]+') | Select-Object -Last 1
         if ($f) { $frames = $f.Value }
     }

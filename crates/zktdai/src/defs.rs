@@ -166,6 +166,10 @@ pub struct Defs {
     pub skirm: Option<UnitDef>,
     pub assault: Option<UnitDef>,
     pub arty: Option<UnitDef>,
+    /// Air fighter (Swift / `planefighter`) for the air factory.
+    pub air: Option<UnitDef>,
+    /// First flying scout (Sparrow) — air factory's scout share.
+    pub air_scout: Option<UnitDef>,
     /// Scout units, cheapest first (Sparrow/Gremlin/Scythe/Widow, ...).
     pub scouts: Vec<UnitDef>,
     pub picket: Option<UnitDef>,
@@ -191,10 +195,10 @@ impl Defs {
         }
         let get = |n: &str| by_name.get(n).copied();
         let mex = get("staticmex").or_else(|| {
-            by_name
-                .values()
-                .copied()
-                .find(|d| !d.is_able_to_move() && metal.is_some_and(|m| d.extracts_resource(m) > 0.0))
+            by_name.values().copied().find(|d| {
+                !d.is_able_to_move()
+                    && (d.custom_param("ismex").is_some() || metal.is_some_and(|m| d.extracts_resource(m) > 0.0))
+            })
         });
         let con = CON_NAMES
             .iter()
@@ -222,6 +226,15 @@ impl Defs {
         if let Some(cost) = metal {
             scouts.sort_by(|a, b| a.cost(cost).partial_cmp(&b.cost(cost)).unwrap_or(std::cmp::Ordering::Equal));
         }
+        let air = get("planefighter").or_else(|| {
+            by_name.values().copied().find(|d| {
+                d.is_able_to_fly()
+                    && d.is_able_to_attack()
+                    && d.name().starts_with("plane")
+                    && d.name().contains("fighter")
+            })
+        });
+        let air_scout = scouts.iter().copied().find(|d| d.is_able_to_fly()).or_else(|| get("planelightscout"));
         let picket = get("turretmissile");
         let turret_ladder = TURRET_LADDER.iter().filter_map(|n| get(n)).collect();
         let aa_ladder = AA_LADDER.iter().filter_map(|n| get(n)).collect();
@@ -262,6 +275,8 @@ impl Defs {
             skirm,
             assault,
             arty,
+            air,
+            air_scout,
             scouts,
             picket,
             turret_ladder,

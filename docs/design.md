@@ -38,6 +38,24 @@ Offensive-defense. The AI's goals, in priority order:
 1. `cargo build --release -p zktdai` + `cargo test` + `tools/dll-smoke` (see README).
 2. Headless matches in WSL2 with `reference/zkgbai-rs/tools/arena/{match,series}.sh` against
    CircuitAI and self-play mirrors; read `infolog.txt` (`[zktdai]`, `[army]`, `[porc]`,
-   `[sabotage]` lines) and the `RESULT` line.
+   `[sabotage]` lines) and the `RESULT` line. On a Windows box with an existing install, use
+   `tools/headless/run.ps1 -ZkInstall <path-to-Zero-K> -Games N -Speed 10` (read-only; all
+   outputs in the work dir).
 3. Port a module at a time from `reference/zkgbai-rs/`; keep the module boundaries above so
    behavior stays readable.
+
+## Prior art (what already exists that we build on or learn from)
+
+- **zkgbai-rs (Anarchid)** — the direct ancestor: vendored wrapper (`springai`, `checkpoint`) plus
+  the doctrine modules we port (`economy/*`, `military/*`, `crates/terrain`). Two lessons we
+  re-learned the hard way this session: (a) the engine only sends `unitIdle` when a command
+  *finishes* (Recoil `CommandAI.cpp`), so **zkgbai issues the commander's first order on
+  `UnitFinished`** (`eco_unit_finished` assigns a task immediately) and re-assigns workers every
+  frame from an idlers queue (`economy/assign.rs`); (b) its arena harness (`tools/arena/match.sh`)
+  runs `spring-headless --write-dir <private dir> <script.txt>` with `IsHost=1` and
+  `[MODOPTIONS] MinSpeed/MaxSpeed` for sim speed — the same recipe our `tools/headless` now uses.
+- **CircuitAI** (bundled in every install, `AI/Skirmish/…CircuitAI…/stable`) — the benchmark
+  opponent (issue #2 baseline); AngelScript, mature porc/eco; not a model for our architecture.
+- **BARb / NullAI** — other bundled skirmish AIs; NullAI is the FFI smoke baseline.
+- Engine-level facts that shaped the code: `-write-dir`/`SpringData` data-dir layering;
+  start-script keys `Gametype`/`Mapname`/`IsHost`; `EVENT_UNIT_IDLE` semantics above.

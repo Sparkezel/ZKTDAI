@@ -70,6 +70,7 @@ issue via `gh`.
 | `TRACE` / `-TraceEvents` | off | run with `ZKTDAI_TRACE_EVENTS=1`: the AI logs every non-update event (and every 300th update) for the first minute — this tells us whether `unitCreated`/`unitIdle` reach the AI, the key diagnostic for the v0.1 idle game |
 | `STARTPOS` / `-StartPos` | 2 (chosen) | start position mode; AIs send their start via `send_start_position` |
 | `SPEED` / `-Speed` | 1 | sim speed multiplier, written to `[MODOPTIONS] MinSpeed/MaxSpeed` in script.txt (e.g. `10` for 10x; same mechanism as zkgbai's arena `-s`) |
+| `MAX_FRAMES` / `-MaxFrames` | 0 (play to end) | quit the game after this many sim frames via an installed LuaUI widget (`quit_widget.lua`, adapted from zkgbai's arena widget) — `1800` = 1 game-minute, for fast iteration. The widget also logs `ARENA_STATS`/`ARENA_FINAL`/`ARENA_GAMEOVER winners=…`/`ARENA_TIMEOUT` lines used for result parsing |
 | `PORT` / `-Port` | 8452 + pid-derived | host UDP port (`IsHost=1; HostIP=127.0.0.1` in script.txt makes the engine self-host; set distinct ports for parallel runs) |
 | `CPUS` / `-CpuMask` | — (engine default) | pin the engine process to its own core(s): `taskset -c` list on Linux (`CPUS=4,5`), hex affinity mask on Windows (`-CpuMask 30`); give each parallel run a distinct port and mask |
 | `MAXUNITS` / `-MaxUnits` | 2000 | per-team unit cap |

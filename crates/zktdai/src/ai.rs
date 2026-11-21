@@ -71,6 +71,16 @@ pub struct Ctx {
     pub opts: Opts,
 }
 
+impl Ctx {
+    /// True for metal extractors. ZK mexes don't set the engine's
+    /// `extractsMetal` tag (they use the `ismex` custom param and per-spot
+    /// rules params), so `extracts_resource` always returns 0 for them —
+    /// detect mexes by the configured mex def or the `ismex` param instead.
+    pub fn is_mex(&self, d: springai::UnitDef) -> bool {
+        self.defs.mex.is_some_and(|m| d.id() == m.id()) || d.custom_param("ismex").is_some()
+    }
+}
+
 pub struct Zktdai {
     ctx: Ctx,
     /// Our live units by engine id -> role.
@@ -78,6 +88,8 @@ pub struct Zktdai {
     /// Metal spots a mex order was already issued for.
     ordered_spots: HashSet<usize>,
     start_sent: bool,
+    /// Set once our_start was anchored to the commander's real spawn pos.
+    anchored: bool,
     terr: Territory,
     eco: Economy,
     fob: Fob,
@@ -147,6 +159,7 @@ impl SkirmishAi for Zktdai {
             roles: HashMap::new(),
             ordered_spots: HashSet::new(),
             start_sent: false,
+            anchored: false,
             terr: Territory::new(0, centre, centre),
             eco: Economy::new(),
             fob: Fob::new(),
@@ -163,15 +176,57 @@ impl SkirmishAi for Zktdai {
     fn handle_event(&mut self, event: Event) -> i32 {
         if trace_events() && self.ctx.frame < 1800 {
             let name = event.name();
-            if name != "update" || self.ctx.frame % 300 == 0 {
-                self.ctx.cb.log(&format!("[zktdai] event {name} f={}", self.ctx.frame));
+            match &event {
+                Event::CommandFinished { unit, command_id, command_topic } => self.ctx.cb.log(&format!(
+                    "[zktdai] event commandFinished f={} unit={} cmd={command_id} topic={command_topic}",
+                    self.ctx.frame,
+                    unit.id()
+                )),
+                Event::UnitCreated { unit, .. } | Event::UnitFinished { unit } => {
+                    if self.ctx.frame < 3600 {
+                        let d = unit.def().map(|d| d.name().to_string()).unwrap_or_default();
+                        self.ctx.cb.log(&format!(
+                            "[zktdai] event {name} f={} unit={} def={} built={}",
+                            self.ctx.frame,
+                            unit.id(),
+                            d,
+                            !unit.is_being_built()
+                        ));
+                    }
+                }
+                _ if name != "update" || self.ctx.frame % 300 == 0 => {
+                    self.ctx.cb.log(&format!("[zktdai] event {name} f={}", self.ctx.frame));
+                }
+                _ => {}
             }
         }
         match event {
             Event::Init { saved_game } => {
                 let cb = self.ctx.cb;
                 let map = cb.map();
-                if let Some(metal) = self.ctx.metal {
+                // Metal spots: prefer the game's published rules params
+                // (mex_count / mex_x<i> / mex_y<i> / mex_z<i>, set by ZK's
+                // mex_spot_finder gadget). Those are the coordinates the
+                // mex-placement gadget allows mex builds on — the engine's
+                // own metalmap spots can differ by enough to get orders
+                // denied. Fall back to the engine metalmap when absent.
+                let g = cb.game();
+                let n = g.rules_param_float("mex_count", 0.0) as i32;
+                if n > 0 {
+                    self.ctx.spots = (1..=n)
+                        .map(|i| {
+                            Vec3::new(
+                                g.rules_param_float(&format!("mex_x{i}"), 0.0),
+                                g.rules_param_float(&format!("mex_y{i}"), 0.0),
+                                g.rules_param_float(&format!("mex_z{i}"), 0.0),
+                            )
+                        })
+                        .collect();
+                    cb.log(&format!("[zktdai] {n} metal spots from rules params"));
+                }
+                if self.ctx.spots.is_empty()
+                    && let Some(metal) = self.ctx.metal
+                {
                     self.ctx.spots = map.resource_map_spots(metal);
                 }
                 self.ctx.wind_min = map.wind_min();
@@ -207,6 +262,21 @@ impl SkirmishAi for Zktdai {
                 if !self.start_sent {
                     self.send_start();
                 }
+                if trace_events() && frame == 0 {
+                    for u in self.ctx.cb.team_units() {
+                        let opts: Vec<String> = u
+                            .def()
+                            .map(|d| d.build_options().iter().map(|o| o.name().to_string()).collect())
+                            .unwrap_or_default();
+                        self.ctx.cb.log(&format!(
+                            "[zktdai] buildopts u={} def={} n={} {:?}",
+                            u.id(),
+                            u.def().map(|d| d.name().to_string()).unwrap_or_default(),
+                            opts.len(),
+                            opts
+                        ));
+                    }
+                }
                 if frame % 30 == 0 {
                     self.war.update(&self.ctx);
                 }
@@ -220,6 +290,23 @@ impl SkirmishAi for Zktdai {
                 // unit that never got an order (the opening commander) would wait
                 // forever. Sweep idle constructors/commander/factories periodically
                 // and dispatch the same handler (idempotent: skips units with orders).
+                // A mex order can be silently denied (mex-placement rules) and
+                // never produce a nanoframe — don't let that block the spot
+                // forever: forget orders whose spot still has no mex of ours.
+                if frame % 1200 == 0
+                    && let Some(mex) = self.ctx.defs.mex
+                {
+                    let cb = self.ctx.cb;
+                    let spots = self.ctx.spots.clone();
+                    let owned = self.terr.owned.clone();
+                    self.ordered_spots.retain(|i| {
+                        owned[*i]
+                            || cb
+                                .team_units()
+                                .iter()
+                                .any(|u| u.def() == Some(mex) && u.pos().distance_2d(spots[*i]) < 96.0)
+                    });
+                }
                 if frame % 120 == 0 {
                     let idle: Vec<i32> = self
                         .ctx
@@ -236,10 +323,40 @@ impl SkirmishAi for Zktdai {
                         })
                         .map(|u| u.id())
                         .collect();
+                    if frame % 600 == 0 && !idle.is_empty() {
+                        self.ctx.cb.log(&format!(
+                            "[zktdai] idle sweep f={frame} units={idle:?} roles={:?}",
+                            idle.iter().map(|id| self.roles.get(id).copied()).collect::<Vec<_>>()
+                        ));
+                    }
                     for id in idle {
                         if let Some(u) = Unit::from_id(self.ctx.cb, id) {
                             self.unit_idle(u);
                         }
+                    }
+                }
+                // probe: every builder's queue + metal while the opening is in flight
+                if trace_events()
+                    && frame < 1500
+                    && frame % 30 == 0
+                    && let Some(m) = self.ctx.metal
+                {
+                    let metal = self.ctx.cb.economy().current(m);
+                    for u in self.ctx.cb.team_units() {
+                        let Some(r) = self.roles.get(&u.id()) else { continue };
+                        if !matches!(r, Role::Commander | Role::Worker | Role::Factory) || u.is_being_built() {
+                            continue;
+                        }
+                        let cmds: Vec<String> =
+                            u.current_commands().iter().map(|c| format!("{}|p={:?}", c.id(), c.params())).collect();
+                        let p = u.pos();
+                        self.ctx.cb.log(&format!(
+                            "[probe] f={frame} {r:?} u={} pos=({:.0},{:.0}) metal={metal:.1} ncmd={} cmds={cmds:?}",
+                            u.id(),
+                            p.x,
+                            p.z,
+                            u.num_current_commands()
+                        ));
                     }
                 }
                 if frame % 150 == 0 {
@@ -275,9 +392,7 @@ impl SkirmishAi for Zktdai {
                 self.war.on_unit_finished(&self.ctx, unit);
                 // all metal extractors run High priority (cmd 34220 state 2):
                 // they get their metal/overdrive share first
-                if unit.team() == self.ctx.cb.game().my_team()
-                    && unit.def().is_some_and(|d| self.ctx.metal.is_some_and(|m| d.extracts_resource(m) > 0.0))
-                {
+                if unit.team() == self.ctx.cb.game().my_team() && unit.def().is_some_and(|d| self.ctx.is_mex(d)) {
                     unit.execute_custom_command(cmd::PRIORITY, &[2.0], opt::NONE, NO_TIMEOUT);
                 }
                 self.track(unit);
@@ -356,6 +471,23 @@ impl Zktdai {
             let role = self.ctx.defs.role(def);
             self.roles.insert(unit.id(), role);
             self.army.on_our_unit(&self.ctx, unit, role);
+            // Anchor our base to where the commander actually spawned: the
+            // start pos we send is only a hint, the engine may place us in a
+            // startbox instead (observed in headless games).
+            if role == Role::Commander && !self.anchored {
+                self.anchored = true;
+                let pos = unit.pos();
+                self.ctx.our_start = pos;
+                self.ctx.enemy_target = Vec3::xz(
+                    self.ctx.cb.map().width() as f32 * 8.0 - pos.x,
+                    self.ctx.cb.map().height() as f32 * 8.0 - pos.z,
+                );
+                self.terr = Territory::new(self.ctx.spots.len(), pos, self.ctx.enemy_target);
+                self.ctx.cb.log(&format!(
+                    "[zktdai] anchored base at commander pos ({:.0},{:.0}), enemy estimate ({:.0},{:.0})",
+                    pos.x, pos.z, self.ctx.enemy_target.x, self.ctx.enemy_target.z
+                ));
+            }
         }
     }
 
@@ -422,12 +554,22 @@ impl Zktdai {
         let pos = Vec3::new(pos.x, map.elevation_at(pos.x, pos.z), pos.z);
         if cb.game().send_start_position(true, pos) {
             self.start_sent = true;
-            self.ctx.our_start = pos;
-            self.ctx.enemy_target = Vec3::xz(map.width() as f32 * 8.0 - pos.x, map.height() as f32 * 8.0 - pos.z);
-            self.terr = Territory::new(self.ctx.spots.len(), pos, self.ctx.enemy_target);
+            // The commander's UnitCreated event can arrive before the first
+            // update, anchoring our_start to the real spawn pos — don't
+            // clobber that with the merely *requested* start pos.
+            if !self.anchored {
+                self.ctx.our_start = pos;
+                self.ctx.enemy_target = Vec3::xz(map.width() as f32 * 8.0 - pos.x, map.height() as f32 * 8.0 - pos.z);
+                self.terr = Territory::new(self.ctx.spots.len(), pos, self.ctx.enemy_target);
+            }
             cb.log(&format!(
-                "[zktdai] start at ({:.0},{:.0}), enemy estimate ({:.0},{:.0})",
-                pos.x, pos.z, self.ctx.enemy_target.x, self.ctx.enemy_target.z
+                "[zktdai] start at ({:.0},{:.0}), anchored ({:.0},{:.0}), enemy estimate ({:.0},{:.0})",
+                pos.x,
+                pos.z,
+                self.ctx.our_start.x,
+                self.ctx.our_start.z,
+                self.ctx.enemy_target.x,
+                self.ctx.enemy_target.z
             ));
         }
     }

@@ -29,6 +29,7 @@ TRACE="${TRACE:-0}"                      # 1 = run games with ZKTDAI_TRACE_EVENT
 STARTPOS="${STARTPOS:-2}"                # 0 random, 1 fixed, 2 chosen (AIs send start pos)
 MAXUNITS="${MAXUNITS:-2000}"
 SPEED="${SPEED:-1}"                      # sim speed multiplier via [MODOPTIONS] MinSpeed/MaxSpeed (e.g. 10)
+MAX_FRAMES="${MAX_FRAMES:-0}"            # quit the game after this many sim frames (0 = play to the end); 1800 = 1 game-minute
 PORT="${PORT:-$((8452 + $$ % 1000))}"     # host UDP port for parallel runs
 CPUS="${CPUS:-}"                         # taskset core list pinning this engine to its own cores (parallel runs)
 TIMEOUT_SEC="${TIMEOUT_SEC:-1800}"
@@ -121,6 +122,10 @@ sed -e "s/@GAMETYPE@/$GAME_TYPE/g" -e "s/@MAP@/$MAP_NAME/g" -e "s/@STARTPOS@/$ST
     -e "s/@OPP_VERSION@/$OPP_VER/g" \
     "$REPO_ROOT/tools/headless/script.txt.template" > "$WORKDIR/script.txt"
 
+# arena reporter widget: ARENA_* stats/outcome lines in the infolog + quitforce at MAX_FRAMES
+mkdir -p "$WORKDIR/LuaUI/Widgets"
+sed "s/@MAX_FRAMES@/$MAX_FRAMES/g" "$REPO_ROOT/tools/headless/quit_widget.lua" > "$WORKDIR/LuaUI/Widgets/zktdai_arena_reporter.lua"
+
 echo "== running $GAMES game(s)"
 RESULTS="$OUT/results.md"
 echo "| game | map | opponent | result | frames | exit |" > "$RESULTS"
@@ -136,9 +141,18 @@ for i in $(seq 1 "$GAMES"); do
     set -e
     cp "$WORKDIR/infolog.txt" "$OUT/infolog-game$i.txt" 2>/dev/null || true
     LOG="$OUT/infolog-game$i.txt"
-    OVER="$(grep -m1 -i 'game over' "$LOG" 2>/dev/null || echo 'no game-over line')"
-    # ZKTDAI is allyteam 0: if allyteam 1 met the game-over conditions, we won
-    if echo "$OVER" | grep -qi 'Allyteam 1'; then RES="WIN"; elif echo "$OVER" | grep -qi 'Allyteam 0'; then RES="LOSS"; else RES="?"; fi
+    # preferred: the arena widget's lines (ZKTDAI is allyteam 0)
+    GO="$(grep -m1 'ARENA_GAMEOVER' "$LOG" 2>/dev/null || true)"
+    TO="$(grep -m1 'ARENA_TIMEOUT' "$LOG" 2>/dev/null || true)"
+    if [[ -n "$GO" ]]; then
+        OVER="$GO"
+        if [[ "$GO" =~ winners=([0-9,]*) ]] && [[ ",${BASH_REMATCH[1]}," == *",0,"* ]]; then RES="WIN"; else RES="LOSS"; fi
+    elif [[ -n "$TO" ]]; then
+        OVER="$TO (frame cap)"; RES="TIMEOUT"
+    else
+        OVER="$(grep -m1 -i 'game over' "$LOG" 2>/dev/null || echo 'no game-over line')"
+        if echo "$OVER" | grep -qi 'Allyteam 1'; then RES="WIN"; elif echo "$OVER" | grep -qi 'Allyteam 0'; then RES="LOSS"; else RES="?"; fi
+    fi
     FRAMES="$(grep -oE 'f=[-0-9]+' "$LOG" 2>/dev/null | tail -n1 || echo '?')"
     echo "game $i: result=$RES ($OVER) $FRAMES exit=$CODE"
     echo "| $i | $MAP_NAME | $OPP | $RES | $FRAMES | $CODE |" >> "$RESULTS"
