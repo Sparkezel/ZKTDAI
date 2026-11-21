@@ -187,6 +187,23 @@ impl Territory {
         self.blocked.get(i).copied().unwrap_or(-1) < 0 || ctx.frame - self.blocked[i] > 7200
     }
 
+    /// Nearest owned (finished mex) spot to the front line. CircuitAI builds
+    /// factories/energy at finished clusters near the midfield, not only at
+    /// the base — expansion anchor for placement.
+    pub fn frontier_spot(&self, ctx: &Ctx) -> Option<usize> {
+        self.owned
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| **o)
+            .min_by(|(i, _), (j, _)| {
+                ctx.spots[*i]
+                    .distance_2d(self.front)
+                    .partial_cmp(&ctx.spots[*j].distance_2d(self.front))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i)
+    }
+
     pub fn expansion_spot(&mut self, ctx: &Ctx, ordered: &HashSet<usize>) -> Option<usize> {
         // Power distance to our centroid: squared distance minus the spot's
         // weight, so high-yield spots win even a bit farther out (the same

@@ -199,8 +199,16 @@ macro_rules! unit_cmd {
 /// [reserved](crate::reserved) units are dropped.
 impl Unit {
     pub fn build(&self, def: UnitDef, pos: Vec3, facing: i32, opts: i16) -> bool {
+        self.build_timed(def, pos, facing, opts, NO_TIMEOUT)
+    }
+
+    /// Like [`build`](Self::build) but the order times out at `timeout`
+    /// (CircuitAI uses 60 s): a build the engine silently dropped or that
+    /// never executed is finished by timeout and can be re-issued, instead of
+    /// lingering in the queue forever.
+    pub fn build_timed(&self, def: UnitDef, pos: Vec3, facing: i32, opts: i16, timeout: i32) -> bool {
         let mut p = pos.to_array();
-        unit_cmd!(self, COMMAND_UNIT_BUILD, SBuildUnitCommand, opts, NO_TIMEOUT,
+        unit_cmd!(self, COMMAND_UNIT_BUILD, SBuildUnitCommand, opts, timeout,
             toBuildUnitDefId: def.id(), buildPos_posF3: p.as_mut_ptr(), facing: facing)
     }
 

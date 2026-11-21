@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use springai::{Callback, Unit, UnitDef, Vec3, opt};
+use springai::{Callback, NO_TIMEOUT, Unit, UnitDef, Vec3, opt};
 
 use crate::ai::Ctx;
 use crate::defs::Role;
@@ -33,7 +33,10 @@ pub fn build_at(cb: Callback, unit: Unit, def: UnitDef, want: Vec3, search_radiu
         want.x,
         want.z
     ));
-    let ok = unit.build(def, Vec3::new(site.x, y, site.z), 0, opt::NONE);
+    // 60 s order timeout (CircuitAI pattern): a dropped build is retried by
+    // timeout instead of sitting in the queue forever.
+    let timeout = cb.game().current_frame() + 1800;
+    let ok = unit.build_timed(def, Vec3::new(site.x, y, site.z), 0, opt::NONE, timeout);
     if !ok {
         cb.log(&format!(
             "[eco] build {} by unit {} REJECTED (site {:.0},{:.0})",
@@ -53,7 +56,12 @@ pub fn build_at(cb: Callback, unit: Unit, def: UnitDef, want: Vec3, search_radiu
 /// accepted; the engine snaps the footprint itself. Falls back to a nearby
 /// snapped site if the direct order is refused.
 pub fn build_mex(cb: Callback, unit: Unit, mex: UnitDef, spot: Vec3, opts: i16) -> bool {
-    if unit.build(mex, spot, 0, opts) {
+    // A shift-queued build waits behind a possibly long walk, so its timeout
+    // must not expire mid-walk — keep it open there. Direct (in-range) builds
+    // get the 60 s CircuitAI-style timeout: if the engine drops them, the
+    // order finishes by timeout and queue verification re-sends.
+    let timeout = if opts & opt::SHIFT_KEY != 0 { NO_TIMEOUT } else { cb.game().current_frame() + 1800 };
+    if unit.build_timed(mex, spot, 0, opts, timeout) {
         cb.log(&format!(
             "[eco] build_mex {} unit={} at spot ({:.1},{:.1}) direct{}",
             mex.name(),
@@ -65,6 +73,27 @@ pub fn build_mex(cb: Callback, unit: Unit, mex: UnitDef, spot: Vec3, opts: i16) 
         return true;
     }
     build_at(cb, unit, mex, spot, 64.0)
+}
+
+/// Repair an unfinished mex nanoframe of ours (e.g. the con that started it
+/// died) — CircuitAI's MexTask does `Repair(target)` when a nanoframe exists.
+/// Returns true if a repair order was issued.
+pub fn repair_unfinished_mex(ctx: &Ctx, unit: &Unit) -> bool {
+    let cb = ctx.cb;
+    let Some(mex) = ctx.defs.mex else { return false };
+    if unit.num_current_commands() > 0 {
+        return false;
+    }
+    let me = unit.pos();
+    let nano = cb.team_units().into_iter().filter(|u| u.def() == Some(mex) && u.is_being_built()).min_by(|a, b| {
+        a.pos().distance_2d(me).partial_cmp(&b.pos().distance_2d(me)).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if let Some(n) = nano
+        && me.distance_2d(n.pos()) <= 2500.0
+    {
+        return unit.repair(n, opt::NONE);
+    }
+    false
 }
 
 /// True if the unit's command queue already contains a build order for `mex`
@@ -518,6 +547,10 @@ impl Economy {
         }
         let Some(mex) = ctx.defs.mex else { return };
         let cur = current_metal(ctx);
+        // finish abandoned mex nanoframes first (CircuitAI repairs the target)
+        if repair_unfinished_mex(ctx, &unit) {
+            return;
+        }
         if let Some(i) = terr.expansion_spot(ctx, ordered)
             && war.can_spend(ctx, ProjectKind::Expansion, metal_cost(ctx, mex))
             && cur >= metal_cost(ctx, mex)

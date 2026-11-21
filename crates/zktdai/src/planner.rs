@@ -12,7 +12,10 @@ use springai::{NO_TIMEOUT, Unit, UnitDef, Vec3, opt};
 
 use crate::ai::Ctx;
 use crate::defs::{Role, cmd};
-use crate::economy::{build_at, build_at_clear, build_mex, has_queued_mex_build, metal_cost, power_def, wants_energy};
+use crate::economy::{
+    build_at, build_at_clear, build_mex, has_queued_mex_build, metal_cost, power_def, repair_unfinished_mex,
+    wants_energy,
+};
 use crate::territory::Territory;
 use crate::threat::Threat;
 use crate::war_chest::{ProjectKind, ProjectState, WarChest};
@@ -194,8 +197,8 @@ impl Planner {
         for (id, job) in jobs {
             let Some(unit) = Unit::from_id(cb, id) else { continue };
             match job {
-                ConJob::Energy => self.energy_step(ctx, unit, war),
-                ConJob::Base => self.base_step(ctx, unit, roles, war),
+                ConJob::Energy => self.energy_step(ctx, unit, roles, terr, war),
+                ConJob::Base => self.base_step(ctx, unit, roles, terr, war),
                 ConJob::Expand => self.expand_step(ctx, unit, roles, terr, ordered, threat, war),
                 ConJob::Reclaim => self.reclaim_step(unit, terr, pooled, group_pos.get(&id).copied()),
             }
@@ -247,7 +250,7 @@ impl Planner {
 
     /// The energy builder: always High priority, grids solar/wind (whichever is
     /// more efficient; solar backup below 80% energy parity) near the base.
-    fn energy_step(&mut self, ctx: &Ctx, unit: Unit, war: &mut WarChest) {
+    fn energy_step(&mut self, ctx: &Ctx, unit: Unit, roles: &HashMap<i32, Role>, terr: &Territory, war: &mut WarChest) {
         let cb = ctx.cb;
         if self.high_prio.insert(unit.id()) {
             unit.execute_custom_command(cmd::PRIORITY, &[2.0], opt::NONE, NO_TIMEOUT);
@@ -269,21 +272,25 @@ impl Planner {
         } else {
             None
         };
+        // CircuitAI builds energy at the frontier (mex spots outside the ally
+        // zone), not only at the base: anchor to the owned spot nearest the
+        // front line, falling back to our start.
+        let want = terr.frontier_spot(ctx).map(|i| ctx.spots[i]).unwrap_or(ctx.our_start);
         if let Some(def) = def {
             let cost = metal_cost(ctx, def);
             if war.can_spend(ctx, ProjectKind::Energy, cost) && cur >= cost {
-                build_at(cb, unit, def, ctx.our_start, 300.0);
+                build_at_clear(cb, ctx, roles, unit, def, want, 300.0);
             }
         }
-        if unit.pos().distance_2d(ctx.our_start) > 400.0 {
-            unit.move_to(ctx.our_start, opt::NONE);
+        if unit.pos().distance_2d(want) > 400.0 {
+            unit.move_to(want, opt::NONE);
         }
     }
 
     /// The base constructor: holds the base and, from the mid game on, opens the
     /// air build options (air factory) and a second factory. Caretakers/express
     /// defense on demand are porc's job; unit build-option expansion is v0.3.
-    fn base_step(&mut self, ctx: &Ctx, unit: Unit, roles: &HashMap<i32, Role>, war: &mut WarChest) {
+    fn base_step(&mut self, ctx: &Ctx, unit: Unit, roles: &HashMap<i32, Role>, terr: &Territory, war: &mut WarChest) {
         let cb = ctx.cb;
         // Second factory once the economy can afford it: one factory cannot
         // replace a raider army that is constantly fighting.
@@ -304,7 +311,11 @@ impl Planner {
                     self.second_fac_queued = true;
                     war.request_save(ctx, "second-factory", ProjectKind::Expansion, Some(f), cost);
                 }
-                if build_at_clear(cb, ctx, roles, unit, f, ctx.our_start, 500.0) {
+                // CircuitAI places follow-up factories at finished clusters
+                // near the midfield (forward base), offset from the enemy:
+                // anchor to the owned spot nearest the front line.
+                let want = terr.frontier_spot(ctx).map(|i| ctx.spots[i]).unwrap_or(ctx.our_start);
+                if build_at_clear(cb, ctx, roles, unit, f, want, 500.0) {
                     self.second_fac_done = true;
                     cb.log("[planner] second factory started");
                 }
@@ -454,26 +465,34 @@ impl Planner {
             }
             self.approach.remove(&unit.id());
         }
-        // 2) Pick a new target. Escort rule (#11): skip spots that are hot —
-        // enemy within ESCORT_ENEMY_RADIUS and no army within
-        // ESCORT_ARMY_RADIUS — unless this constructor already stands there.
+        // 2) Pick a new target. CircuitAI expands at the frontier (clusters
+        // toward midfield), not only the home half, and never through a hot
+        // spot: enemy near the spot is only OK with local superiority.
         let target = (0..ctx.spots.len())
             .filter(|i| !terr.owned[*i] && !terr.enemy[*i] && !ordered.contains(i) && terr.not_blocked(ctx, *i))
             .filter(|i| {
                 let spot = ctx.spots[*i];
-                // near the worker, or in the home half of the map, or with an
-                // escort-worthy local superiority — otherwise raiders walk it first
-                me.distance_2d(spot) <= 200.0
+                let superior = threat.local_superiority(ctx, roles, spot, 400.0, 700.0);
+                let safe = superior || !threat.enemy_near(spot, 700.0);
+                safe && (me.distance_2d(spot) <= 200.0
                     || ctx.our_start.distance_2d(spot) <= 1600.0
-                    || threat.local_superiority(ctx, roles, spot, ESCORT_ARMY_RADIUS, ESCORT_ENEMY_RADIUS)
+                    || terr.front.distance_2d(spot) <= 1400.0
+                    || threat.local_superiority(ctx, roles, spot, ESCORT_ARMY_RADIUS, ESCORT_ENEMY_RADIUS))
             })
             .min_by(|a, b| {
-                me.distance_2d(ctx.spots[*a])
-                    .partial_cmp(&me.distance_2d(ctx.spots[*b]))
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                // prefer frontier spots (near the front), then nearest to us
+                let key = |i: &usize| {
+                    let s = ctx.spots[*i];
+                    (terr.front.distance_2d(s) * 2.0 + me.distance_2d(s)) as i64
+                };
+                key(a).cmp(&key(b))
             });
         let Some(i) = target else {
-            // nothing left to expand to: hold the front line
+            // nothing left to expand to: finish an abandoned mex nanoframe
+            // if there is one, else hold the front line
+            if repair_unfinished_mex(ctx, &unit) {
+                return;
+            }
             if me.distance_2d(terr.front) > 300.0 {
                 unit.move_to(terr.front, opt::NONE);
             }

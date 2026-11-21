@@ -178,3 +178,20 @@ Paste this into a fresh assistant session to continue. Repo: `Sparkezel/ZKTDAI`,
   collapse = defense/map-control, not production.
 - Run dirs: run7/run8 = Altored Divide, run9/10/11 = Comet Catcher Redux. Logs:
   `<workdir>/infolog.txt` (all), `<workdir>/out/console-1.log`, replays `<workdir>/demos/*.sdfz`.
+
+## 7. CircuitAI economy patterns (after `a62d547`, next commits)
+CircuitAI source cloned to /d/1devving/circuitai-src (rlcevg/CircuitAI branch zk). Implemented:
+- SHIFT-chained move->build + queue verification + stall re-send (a62d547) — fixes
+  unfinished-mex-frame bug from run9.
+- Frontier expansion: expand_step targets spots near terr.front (1400) or home (1600),
+  safety predicate (no enemy within 700 unless local superiority), target key =
+  2*dist(front)+dist(me). Territory.frontier_spot() = owned spot nearest front.
+- Repair abandoned mex nanoframes (repair_unfinished_mex) in worker_idle + expand fallback.
+- Energy + second factory placed at frontier_spot (CircuitAI builds at midfield clusters).
+- 60s build timeout for direct builds (CircuitAI style); SHIFT-queued builds keep
+  NO_TIMEOUT — a 60s timeout on a chained build expires mid-walk and killed expansion
+  (run16 regression, fixed in run17).
+- run17: even until f=7200 (36u/15.1m/3402dmg vs CAI 34/19.7/3279), loss at f=20708
+  (CAI 180u/88m vs us 7u/6m, territory 0%). Remaining gap: CAI expands to 60+ mexes,
+  we hold ~4 — its cluster-graph frontier expansion + porc at every mex is the next
+  big lever.
