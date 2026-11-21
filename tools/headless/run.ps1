@@ -43,7 +43,9 @@ param(
     [int]$TimeoutSec = 1800,
     [string]$ExtraArgs = "",
     [string]$ZkInstall = "",                # existing Zero-K install dir (read-only use via -write-dir)
-    [switch]$KeepWidgets                    # do NOT set widgetDetailLevel=0 (headless runs do, to skip detail-gated LuaUI widgets and save RAM)
+    [switch]$KeepWidgets,                   # do NOT set widgetDetailLevel=0 (headless runs do, to skip detail-gated LuaUI widgets and save RAM)
+    [switch]$Viewer,                        # serve the AI's operator dashboard (ZKTDAI_OPERATOR env) and open it in the browser once the game is up
+    [int]$ViewerPort = 7460                 # operator dashboard port for -Viewer (next 32 ports are tried if taken)
 )
 $ErrorActionPreference = "Stop"
 
@@ -229,6 +231,23 @@ if (-not $KeepWidgets) {
 }
 
 Write-Host "== running $Games game(s)"
+$opUrl = ""
+if ($Viewer) {
+    # the AI reads ZKTDAI_OPERATOR and serves its dashboard on this port
+    $env:ZKTDAI_OPERATOR = "$ViewerPort"
+    $opUrl = "http://127.0.0.1:$ViewerPort/"
+    Write-Host "== operator dashboard: $opUrl (opens when the game starts; status.json/board.png land in $WorkDir\AI\Skirmish\ZKTDAI\$Version\)"
+    $null = Start-Job -Name zktdai-viewer -ScriptBlock {
+        param($url, $port)
+        for ($i = 0; $i -lt 300; $i++) {
+            try {
+                $r = Invoke-WebRequest -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2 -UseBasicParsing
+                if ($r.StatusCode -eq 200) { Start-Process $url; break }
+            } catch {}
+            Start-Sleep -Seconds 5
+        }
+    } -ArgumentList $opUrl, $ViewerPort
+}
 $results = Join-Path $Out "results.md"
 "| game | map | opponent | result | frames | exit |" | Set-Content $results
 "|---|---|---|---|---|---|" | Add-Content $results
@@ -283,6 +302,10 @@ for ($i = 1; $i -le $Games; $i++) {
     "| $i | $MapName | $Opp | $res | $frames | $code |" | Add-Content $results
 }
 Remove-Item "Env:\$envName" -ErrorAction SilentlyContinue
+if ($Viewer) {
+    Remove-Item "Env:\ZKTDAI_OPERATOR" -ErrorAction SilentlyContinue
+    Write-Host "dashboard was: $opUrl (refresh the browser tab between games; each game re-serves on the same port)"
+}
 
 Write-Host "== results"
 Get-Content $results

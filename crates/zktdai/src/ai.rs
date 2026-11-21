@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
+use serde_json::json;
 use springai::{Callback, Event, NO_TIMEOUT, Resource, SkirmishAi, Unit, Vec3, opt};
 
 /// Event-trace logging (set `ZKTDAI_TRACE_EVENTS=1` in the game process env;
@@ -18,6 +19,7 @@ use crate::defs::{Defs, Role, cmd};
 use crate::economy::{Economy, has_queued_mex_build};
 use crate::fob::Fob;
 use crate::fortify::Fortify;
+use crate::operator::{self, BoardEnemy, BoardSpot, BoardState, BoardUnit, Operator, UnitMark};
 use crate::planner::Planner;
 use crate::porc::Porc;
 use crate::sabotage::Sabotage;
@@ -106,6 +108,11 @@ pub struct Zktdai {
     planner: Planner,
     threat: Threat,
     war: WarChest,
+    /// Live dashboard server (option `operator` / env `ZKTDAI_OPERATOR`);
+    /// disabled = no server, no files.
+    op: Operator,
+    /// Cached terrain layer for the board PNG.
+    op_terrain: Option<operator::Terrain>,
 }
 
 fn bool_opt(cb: Callback, key: &str, default: bool) -> bool {
@@ -148,6 +155,7 @@ impl SkirmishAi for Zktdai {
         );
         let map = cb.map();
         let centre = Vec3::xz(map.width() as f32 * 4.0, map.height() as f32 * 4.0);
+        let op = Operator::start(cb);
         Zktdai {
             ctx: Ctx {
                 cb,
@@ -178,6 +186,8 @@ impl SkirmishAi for Zktdai {
             planner: Planner::new(),
             threat: Threat::new(),
             war,
+            op,
+            op_terrain: None,
         }
     }
 
@@ -268,6 +278,20 @@ impl SkirmishAi for Zktdai {
             }
             Event::Update { frame } => {
                 self.ctx.frame = frame;
+                self.op.tick(frame);
+                if self.op.enabled() {
+                    if frame % 30 == 0 {
+                        self.op.set_snapshot(self.snapshot_json());
+                    }
+                    if frame % 150 == 0
+                        && let Some(png) = self.render_board_png()
+                    {
+                        self.op.set_board(png);
+                    }
+                    if frame % 300 == 0 {
+                        self.op.write_files();
+                    }
+                }
                 if !self.start_sent {
                     self.send_start();
                 }
@@ -479,7 +503,11 @@ impl SkirmishAi for Zktdai {
                     let _ = self.ctx.cb.call_lua_rules(&format!("ZKTDAI_STATUS_REPLY {}", json));
                 }
             }
-            Event::Release { reason } => self.ctx.cb.log(&format!("[zktdai] release reason={reason}")),
+            Event::Release { reason } => {
+                self.ctx.cb.log(&format!("[zktdai] release reason={reason}"));
+                // Stop the operator server before the engine may unload the DLL.
+                self.op.shutdown();
+            }
             _ => {}
         }
         0
@@ -500,6 +528,162 @@ impl Zktdai {
             self.threat.tracked(),
             &war[1..] // strip outer '{' to nest
         )
+    }
+
+    /// Full world snapshot for the operator dashboard (`GET /snapshot`).
+    fn snapshot_json(&self) -> String {
+        let cb = self.ctx.cb;
+        let map = cb.map();
+        let game = cb.game();
+        let eco = cb.economy();
+        let res = |m: Option<Resource>| -> serde_json::Value {
+            m.map(|m| {
+                json!({
+                    "current": eco.current(m),
+                    "income": eco.income(m),
+                    "usage": eco.usage(m),
+                    "storage": eco.storage(m),
+                })
+            })
+            .unwrap_or(serde_json::Value::Null)
+        };
+        let war: serde_json::Value =
+            serde_json::from_str(&self.war.status_json(&self.ctx)).unwrap_or(serde_json::Value::Null);
+        let units: Vec<serde_json::Value> = cb
+            .team_units()
+            .iter()
+            .map(|u| {
+                let p = u.pos();
+                let d = u.def();
+                json!({
+                    "id": u.id(),
+                    "def": d.map(|d| d.name()).unwrap_or_default(),
+                    "role": self.roles.get(&u.id()).map(|r| format!("{r:?}")).unwrap_or_default(),
+                    "x": p.x,
+                    "z": p.z,
+                    "hp": u.health(),
+                    "max_hp": u.max_health(),
+                    "building": u.is_being_built(),
+                    "static": d.is_some_and(|d| !d.is_able_to_move()),
+                })
+            })
+            .collect();
+        let enemies: Vec<serde_json::Value> = cb
+            .enemy_units_in_radar_and_los()
+            .iter()
+            .map(|e| {
+                let p = e.pos();
+                json!({
+                    "id": e.id(),
+                    "def": e.def().map(|d| d.name()).unwrap_or_default(),
+                    "x": p.x,
+                    "z": p.z,
+                    "static": e.def().is_some_and(|d| !d.is_able_to_move()),
+                })
+            })
+            .collect();
+        let spots: Vec<serde_json::Value> = self
+            .ctx
+            .spots
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                json!({
+                    "i": i,
+                    "x": s.x,
+                    "z": s.z,
+                    "metal": self.ctx.spot_metal.get(i).copied().unwrap_or(2.0),
+                    "owned": self.terr.owned.get(i).copied().unwrap_or(false),
+                    "enemy": self.terr.enemy.get(i).copied().unwrap_or(false),
+                    "blocked": self.terr.blocked.get(i).copied().unwrap_or(-1),
+                })
+            })
+            .collect();
+        json!({
+            "name": "ZKTDAI",
+            "version": env!("CARGO_PKG_VERSION"),
+            "frame": self.ctx.frame,
+            "map": {"name": map.name(), "w": map.width(), "h": map.height()},
+            "team": game.my_team(),
+            "ally_team": game.my_ally_team(),
+            "metal": res(self.ctx.metal),
+            "energy": res(self.ctx.energy),
+            "territory": {
+                "share": self.terr.share,
+                "owned": self.terr.owned.iter().filter(|o| **o).count(),
+                "enemy": self.terr.enemy.iter().filter(|e| **e).count(),
+                "front": [self.terr.front.x, self.terr.front.z],
+                "our_start": [self.ctx.our_start.x, self.ctx.our_start.z],
+                "enemy_target": [self.ctx.enemy_target.x, self.ctx.enemy_target.z],
+            },
+            "spots": spots,
+            "units": units,
+            "enemies": enemies,
+            "army": {
+                "units": self.roles.values().filter(|r| r.is_combat()).count(),
+                "scouts": self.roles.values().filter(|r| **r == Role::Scout).count(),
+            },
+            "threat": {"tracked": self.threat.tracked()},
+            "war": war,
+        })
+        .to_string()
+    }
+
+    /// Render the board PNG (map + spots + units + enemies + front). Called
+    /// every ~5 s when the operator is on.
+    fn render_board_png(&mut self) -> Option<Vec<u8>> {
+        let cb = self.ctx.cb;
+        let map = cb.map();
+        if self.op_terrain.is_none() {
+            self.op_terrain = Some(operator::sample_terrain(map));
+        }
+        let terrain = self.op_terrain.as_ref()?;
+        let frame = self.ctx.frame;
+        let state = BoardState {
+            map_w: map.width() as f32 * 8.0,
+            frame,
+            spots: self
+                .ctx
+                .spots
+                .iter()
+                .enumerate()
+                .map(|(i, s)| BoardSpot {
+                    x: s.x,
+                    z: s.z,
+                    owned: self.terr.owned.get(i).copied().unwrap_or(false),
+                    enemy: self.terr.enemy.get(i).copied().unwrap_or(false),
+                    blocked: self.terr.blocked.get(i).is_some_and(|b| *b >= 0 && frame - *b < 3600),
+                })
+                .collect(),
+            geo: self.ctx.geo_spots.clone(),
+            units: cb
+                .team_units()
+                .iter()
+                .map(|u| {
+                    let p = u.pos();
+                    let mark = match self.roles.get(&u.id()).copied().unwrap_or(Role::Other) {
+                        Role::Commander => UnitMark::Commander,
+                        Role::Worker => UnitMark::Worker,
+                        Role::Factory => UnitMark::Building,
+                        _ if u.def().is_some_and(|d| !d.is_able_to_move()) => UnitMark::Building,
+                        _ => UnitMark::Combat,
+                    };
+                    BoardUnit { x: p.x, z: p.z, mark }
+                })
+                .collect(),
+            enemies: cb
+                .enemy_units_in_radar_and_los()
+                .iter()
+                .map(|e| {
+                    let p = e.pos();
+                    BoardEnemy { x: p.x, z: p.z, is_static: e.def().is_some_and(|d| !d.is_able_to_move()) }
+                })
+                .collect(),
+            our_start: self.ctx.our_start,
+            front: self.terr.front,
+            enemy_target: self.ctx.enemy_target,
+        };
+        Some(operator::render_board(&state, terrain))
     }
 
     fn track(&mut self, unit: Unit) {

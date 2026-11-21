@@ -116,6 +116,14 @@ local options = {
 		type   = 'bool',
 		def    = true,
 	},
+	{
+		key    = 'operator',
+		name   = 'Operator dashboard',
+		desc   = 'Serve a live dashboard (JSON snapshot + map PNG) at http://127.0.0.1:<port>/ — off | on | port | host:port. status.json/board.png are also written to the AI\'s writable data dir. The ZKTDAI_OPERATOR env var overrides this for headless runs (tools/headless/run.ps1 -Viewer).',
+		type   = 'string',
+		def    = '',
+		maxlen = 32,
+	},
 }
 
 return options

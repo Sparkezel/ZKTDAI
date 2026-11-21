@@ -13,6 +13,7 @@ mod defs;
 mod economy;
 mod fob;
 mod fortify;
+mod operator;
 mod planner;
 mod porc;
 mod sabotage;

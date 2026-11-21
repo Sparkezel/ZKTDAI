@@ -195,3 +195,32 @@ CircuitAI source cloned to /d/1devving/circuitai-src (rlcevg/CircuitAI branch zk
   (CAI 180u/88m vs us 7u/6m, territory 0%). Remaining gap: CAI expands to 60+ mexes,
   we hold ~4 — its cluster-graph frontier expansion + porc at every mex is the next
   big lever.
+
+## 8. Operator dashboard (live view of headless games)
+Ported a minimized version of zkgbai-rs's `operator` module into ZKTDAI
+(`crates/zktdai/src/operator.rs`): a std-only HTTP server inside the AI DLL
+(one thread per connection, no async/HTTP framework) plus a hand-rolled
+software canvas -> PNG (`png` crate), so **no GUI stack is needed at all**
+(egui/wgpu/imgui were considered and dropped — pure Rust, no C++ toolchain).
+
+- Enable: AI option `operator` = `on` | port | `host:port` (declared in
+  AIOptions.lua, default off), or env `ZKTDAI_OPERATOR` (option wins).
+  Default port 7460, next 32 ports tried when taken.
+- Routes: `GET /` dashboard (auto-refreshing board + snapshot), `GET /snapshot`
+  (full JSON: frame, map, metal/energy, per-spot owned/enemy/blocked, units with
+  role/pos/hp, enemies in radar+LOS, territory share/front, war chest),
+  `GET /board.png` (map PNG: terrain, grid, mex rings blue/red/grey/white,
+  geo vents, our units yellow/green/blue-square/cyan, enemies red, front
+  magenta), `GET /health`.
+- Files: every 300f the AI also writes `status.json` + `board.png` +
+  `operator.json` (discovery: url/port/team) into its writable data dir
+  `<WorkDir>/AI/Skirmish/ZKTDAI/<version>/` — inspectable without a browser.
+- Cadence: snapshot every 30f, board PNG every 150f, files every 300f (AI
+  thread renders; server threads only read mutexes).
+- run.ps1: `-Viewer [-ViewerPort 7460]` sets ZKTDAI_OPERATOR, starts a job that
+  polls `/health` and opens the dashboard in the browser once the game is up.
+- Verified in run23 (see git log): endpoints respond, board.png/status.json written.
+- Prior art: zkgbai-rs `crates/zkgbai/src/operator/{server,board}.rs` (full
+  version with SSE events, MCP/MCPL, journals, HUD); engine-native spectating
+  (autohosts run spring-headless, clients join live games as spectators);
+  ZK replay browser (ykc1n/flea) for post-hoc .sdfz web viewing.
