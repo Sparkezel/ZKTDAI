@@ -123,11 +123,6 @@ fn current_metal(ctx: &Ctx) -> f32 {
     ctx.metal.map(|m| ctx.cb.economy().current(m)).unwrap_or(0.0)
 }
 
-/// Debug cadence for one-shot logs: every 600 frames.
-fn frame_dbg(ctx: &Ctx) -> bool {
-    ctx.frame % 600 == 0
-}
-
 pub fn metal_cost(ctx: &Ctx, def: UnitDef) -> f32 {
     ctx.defs.metal().map(|m| def.cost(m)).unwrap_or(f32::MAX)
 }
@@ -176,6 +171,12 @@ pub struct Economy {
     pylons_built: usize,
     /// The single home lotus (near factory/mexes) is built once.
     lotus_built: bool,
+    /// Opening-factory placement retry: GiveOrder returning true only means
+    /// the command was queued — CBuilderCAI silently drops builds whose
+    /// footprint is blocked, and a later non-shift order replaces a pending
+    /// one. So we retry on a spiral of sites until a factory nanoframe exists.
+    factory_tries: usize,
+    factory_last_try: i32,
 }
 
 impl Economy {
@@ -188,6 +189,8 @@ impl Economy {
             grid_pylons: Vec::new(),
             pylons_built: 0,
             lotus_built: false,
+            factory_tries: 0,
+            factory_last_try: -1000,
         }
     }
 
@@ -228,31 +231,16 @@ impl Economy {
         let cur = current_metal(ctx);
         match self.opening {
             Opening::Factory => {
-                if let Some(f) = ctx.defs.factory {
-                    // The first factory is free (ZK gadget discount): don't gate
-                    // it on `cur >= cost` — with the storage cap pinning metal
-                    // below the nominal cost we would never build anything.
-                    let first_free = !roles.values().any(|r| *r == Role::Factory);
-                    let cost = if first_free { 0.0 } else { metal_cost(ctx, f) };
-                    if frame_dbg(ctx) {
-                        cb.log(&format!(
-                            "[eco] com idle f={} opening=factory def={} cost={:.0} cur={:.0} first_free={first_free}",
-                            ctx.frame,
-                            f.name(),
-                            metal_cost(ctx, f),
-                            cur
-                        ));
-                    }
-                    // Build next to the commander's real position: at f=0 the
-                    // sent start pos may not match where the engine actually
-                    // spawned us, and ctx.our_start can still be map centre.
-                    let built = war.can_spend(ctx, ProjectKind::Expansion, cost)
-                        && (first_free || cur >= cost)
-                        && build_at(cb, unit, f, unit.pos(), 400.0);
-                    if frame_dbg(ctx) || built {
-                        cb.log(&format!("[eco] factory build attempt f={} built={built}", ctx.frame));
-                    }
-                    if built {
+                let Some(f) = ctx.defs.factory else {
+                    self.opening = Opening::Con;
+                    return;
+                };
+                // Advance only once a factory nanoframe/unit actually exists:
+                // GiveOrder's true only means "queued" — a blocked footprint
+                // (IsBuildPosBlocked) or a later non-shift order silently
+                // drops the build and no nanoframe ever appears.
+                if roles.values().any(|r| *r == Role::Factory) || cb.team_units().iter().any(|u| u.def() == Some(f)) {
+                    if self.opening_mexes.is_empty() {
                         // capture the 3 surrounding mexes for the wind grid
                         let mut spots: Vec<usize> =
                             (0..ctx.spots.len()).filter(|i| !terr.owned[*i] && !terr.enemy[*i]).collect();
@@ -263,14 +251,49 @@ impl Economy {
                                 .unwrap_or(std::cmp::Ordering::Equal)
                         });
                         self.opening_mexes = spots.into_iter().take(3).collect();
-                        // don't wait for the factory's first con to finish:
-                        // the factory builds cons itself (factory_idle), the
-                        // commander goes capture the opening mexes right away
-                        self.opening = Opening::Mexes;
                     }
-                } else {
-                    self.opening = Opening::Con;
+                    // don't wait for the factory's first con to finish: the
+                    // factory builds cons itself (factory_idle), the commander
+                    // goes capture the opening mexes right away
+                    self.opening = Opening::Mexes;
+                    return;
                 }
+                // Retry only when the commander has no pending order (the
+                // previous one was dropped or finished without a nanoframe),
+                // or when it has been stuck queued for too long.
+                let pending = unit.num_current_commands() > 0;
+                if ctx.frame - self.factory_last_try < 30 || (pending && ctx.frame - self.factory_last_try < 300) {
+                    return;
+                }
+                self.factory_last_try = ctx.frame;
+                // The first factory is free (ZK gadget discount): don't gate
+                // on `cur >= cost` — with the storage cap pinning metal below
+                // the nominal cost we would never build anything.
+                if !war.can_spend(ctx, ProjectKind::Expansion, 0.0) {
+                    return;
+                }
+                // Spiral of candidate sites around our real spawn position: at
+                // f=0 the sent start pos may not match where the engine placed
+                // us, and the nearest site can be blocked (river/slope).
+                let t = self.factory_tries;
+                self.factory_tries += 1;
+                let angle = (t % 8) as f32 * std::f32::consts::FRAC_PI_4;
+                let radius = 96.0 + 80.0 * (t / 8) as f32;
+                let want = Vec3::xz(ctx.our_start.x + angle.cos() * radius, ctx.our_start.z + angle.sin() * radius);
+                let raw = cb.map().find_closest_build_site(f, want, 240.0, 0, 0);
+                let site = if raw.x < 0.0 { want } else { Vec3::xz(raw.x, raw.z) };
+                let y = cb.map().elevation_at(site.x, site.z);
+                cb.log(&format!(
+                    "[eco] factory try {t} f={} def={} site=({:.0},{:.0}) want=({:.0},{:.0}) cur={:.0}",
+                    ctx.frame,
+                    f.name(),
+                    site.x,
+                    site.z,
+                    want.x,
+                    want.z,
+                    cur
+                ));
+                unit.build(f, Vec3::new(site.x, y, site.z), 0, opt::NONE);
                 return;
             }
             Opening::Con => {
