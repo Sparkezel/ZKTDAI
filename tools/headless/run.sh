@@ -34,6 +34,7 @@ PORT="${PORT:-$((8452 + $$ % 1000))}"     # host UDP port for parallel runs
 CPUS="${CPUS:-}"                         # taskset core list pinning this engine to its own cores (parallel runs)
 TIMEOUT_SEC="${TIMEOUT_SEC:-1800}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
+KEEP_WIDGETS="${KEEP_WIDGETS:-0}"              # 1 = keep all LuaUI widgets (headless default sets widgetDetailLevel=0 to save RAM)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$WORKDIR/out"
@@ -125,6 +126,13 @@ sed -e "s/@GAMETYPE@/$GAME_TYPE/g" -e "s/@MAP@/$MAP_NAME/g" -e "s/@STARTPOS@/$ST
 # arena reporter widget: ARENA_* stats/outcome lines in the infolog + quitforce at MAX_FRAMES
 mkdir -p "$WORKDIR/LuaUI/Widgets"
 sed "s/@MAX_FRAMES@/$MAX_FRAMES/g" "$REPO_ROOT/tools/headless/quit_widget.lua" > "$WORKDIR/LuaUI/Widgets/zktdai_arena_reporter.lua"
+
+# headless: widgetDetailLevel=0 makes ZK's cawidgets.lua disable every widget
+# with a detailsDefault (engine-sanctioned low-detail mode; core alwaysStart
+# widgets and the arena reporter stay, so ARENA_* logging and quitforce work)
+if [[ "$KEEP_WIDGETS" != "1" ]] && [[ -f "$WORKDIR/springsettings.cfg" ]]; then
+    grep -qE '^\s*widgetDetailLevel' "$WORKDIR/springsettings.cfg" || echo "widgetDetailLevel = 0" >> "$WORKDIR/springsettings.cfg"
+fi
 
 echo "== running $GAMES game(s)"
 RESULTS="$OUT/results.md"

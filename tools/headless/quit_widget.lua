@@ -16,6 +16,15 @@ end
 local MAX_FRAMES = @MAX_FRAMES@
 local done = false
 
+function widget:Initialize()
+	-- visibility for the headless widget strip (run.ps1/run.sh disable all
+	-- widgets except this one via LuaUI/Config/ZK_order.lua); pcall: an
+	-- erroring Initialize gets the widget removed by cawidgets.lua
+	pcall(function()
+		Spring.Echo("ARENA_WIDGETS active=" .. tostring(widgetHandler and widgetHandler.widgets and #widgetHandler.widgets or -1))
+	end)
+end
+
 local function report(tag)
 	local parts = {}
 	for _, teamID in ipairs(Spring.GetTeamList()) do

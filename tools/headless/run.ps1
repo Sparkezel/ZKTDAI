@@ -42,7 +42,8 @@ param(
     [string]$CpuMask = "",                  # hex process-affinity mask, e.g. "10" = core 4; give each parallel run its own core(s)
     [int]$TimeoutSec = 1800,
     [string]$ExtraArgs = "",
-    [string]$ZkInstall = ""                 # existing Zero-K install dir (read-only use via -write-dir)
+    [string]$ZkInstall = "",                # existing Zero-K install dir (read-only use via -write-dir)
+    [switch]$KeepWidgets                    # do NOT set widgetDetailLevel=0 (headless runs do, to skip detail-gated LuaUI widgets and save RAM)
 )
 $ErrorActionPreference = "Stop"
 
@@ -212,6 +213,20 @@ $tpl | Set-Content "$WorkDir\script.txt"
 New-Item -ItemType Directory -Force -Path "$WorkDir\LuaUI\Widgets" | Out-Null
 (Get-Content "$RepoRoot\tools\headless\quit_widget.lua" -Raw) -replace '@MAX_FRAMES@', "$MaxFrames" |
     Set-Content "$WorkDir\LuaUI\Widgets\zktdai_arena_reporter.lua"
+
+# Headless runs don't render, but the engine still loads ~440 LuaUI widgets.
+# widgetDetailLevel=0 makes ZK's cawidgets.lua disable every widget that has a
+# detailsDefault (engine-sanctioned "low detail" mode; core alwaysStart widgets
+# and the arena reporter stay, so ARENA_* logging and quitforce keep working).
+if (-not $KeepWidgets) {
+    $cfg = Join-Path $WorkDir "springsettings.cfg"
+    if (Test-Path $cfg) {
+        $txt = Get-Content $cfg -Raw
+        if ($txt -notmatch "(?m)^\s*widgetDetailLevel") {
+            Add-Content $cfg "widgetDetailLevel = 0`n"
+        }
+    }
+}
 
 Write-Host "== running $Games game(s)"
 $results = Join-Path $Out "results.md"
