@@ -183,7 +183,7 @@ impl SkirmishAi for Zktdai {
                     unit.id()
                 )),
                 Event::UnitCreated { unit, .. } | Event::UnitFinished { unit } => {
-                    if self.ctx.frame < 3600 {
+                    if self.ctx.frame < 20000 {
                         let d = unit.def().map(|d| d.name().to_string()).unwrap_or_default();
                         self.ctx.cb.log(&format!(
                             "[zktdai] event {name} f={} unit={} def={} built={}",
@@ -337,7 +337,7 @@ impl SkirmishAi for Zktdai {
                 }
                 // probe: every builder's queue + metal while the opening is in flight
                 if trace_events()
-                    && frame < 1500
+                    && frame < 20000
                     && frame % 30 == 0
                     && let Some(m) = self.ctx.metal
                 {

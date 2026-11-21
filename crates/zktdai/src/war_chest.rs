@@ -234,6 +234,41 @@ impl WarChest {
         self.request_inner(ctx, name, kind, def, cost, budget_bump, false)
     }
 
+    /// Queue a project as a pure reservation even if we can't afford it yet —
+    /// used to save up for big builds (the air factory): while queued, its
+    /// `reserved` amount is excluded from `spendable`, so the army/porc buckets
+    /// stop draining metal until the build can start. Returns true if the
+    /// project is (now) queued.
+    pub fn request_save(
+        &mut self,
+        ctx: &Ctx,
+        name: &'static str,
+        kind: ProjectKind,
+        def: Option<UnitDef>,
+        cost: f32,
+    ) -> bool {
+        if self
+            .projects
+            .iter()
+            .any(|p| p.name == name && (p.state == ProjectState::Queued || p.state == ProjectState::Active))
+        {
+            return true;
+        }
+        self.projects.push(Project {
+            name,
+            kind,
+            state: ProjectState::Queued,
+            def,
+            target: None,
+            builder: None,
+            priority: true, // save-up projects get their builder High priority
+            reserved: cost,
+            budget_bump: 0.0,
+            since: ctx.frame,
+        });
+        true
+    }
+
     /// Same, but the project's builder gets High construction priority (cmd
     /// 34220 state 2) when the build starts: it draws metal from storage first
     /// while normal-priority constructors are scaled down by the gadget.

@@ -12,7 +12,7 @@ use springai::{NO_TIMEOUT, Unit, Vec3, opt};
 
 use crate::ai::Ctx;
 use crate::defs::{Role, cmd};
-use crate::economy::{build_at, metal_cost, power_def, wants_energy};
+use crate::economy::{build_at, build_mex, metal_cost, power_def, wants_energy};
 use crate::territory::Territory;
 use crate::threat::Threat;
 use crate::war_chest::{ProjectKind, ProjectState, WarChest};
@@ -73,6 +73,7 @@ pub struct Planner {
     big_idx: usize,
     clusters_secured: usize,
     escort_cd: i32,
+    air_fac_queued: bool,
     air_fac_done: bool,
 }
 
@@ -87,6 +88,7 @@ impl Planner {
             big_idx: 0,
             clusters_secured: 0,
             escort_cd: 0,
+            air_fac_queued: false,
             air_fac_done: false,
         }
     }
@@ -265,7 +267,6 @@ impl Planner {
     /// porc's job; unit build-option expansion is v0.3.
     fn base_step(&mut self, ctx: &Ctx, unit: Unit, war: &mut WarChest) {
         let cb = ctx.cb;
-        let cur = ctx.metal.map(|m| cb.economy().current(m)).unwrap_or(0.0);
         if !self.air_fac_done {
             let income = ctx.metal.map(|m| cb.economy().income(m)).unwrap_or(0.0);
             let air_exists = cb
@@ -278,12 +279,18 @@ impl Planner {
                 && let Some(f) = ctx.defs.get("factoryplane").or_else(|| ctx.defs.get("factorygunship"))
             {
                 let cost = metal_cost(ctx, f);
-                if war.request(ctx, "air-factory", ProjectKind::Expansion, Some(f), cost, 0.0)
-                    && cur >= cost
-                    && build_at(cb, unit, f, ctx.our_start, 500.0)
-                {
-                    self.air_fac_done = true;
-                    cb.log("[planner] air factory queued (midgame build options)");
+                if !self.air_fac_queued {
+                    // Buildings don't need the full metal up front: the engine
+                    // starts the nanoframe and construction is paid per frame
+                    // from build power. So reserve the cost (stops army/porc
+                    // draining it, gives the builder High priority) and start
+                    // the build immediately — supply it with build power.
+                    self.air_fac_queued = true;
+                    war.request_save(ctx, "air-factory", ProjectKind::Expansion, Some(f), cost);
+                    if build_at(cb, unit, f, ctx.our_start, 500.0) {
+                        self.air_fac_done = true;
+                        cb.log("[planner] air factory started (paid over time from build power)");
+                    }
                 }
             }
         }
@@ -318,7 +325,10 @@ impl Planner {
             .filter(|i| !terr.owned[*i] && !terr.enemy[*i] && !ordered.contains(i))
             .filter(|i| {
                 let spot = ctx.spots[*i];
+                // near the worker, or in the home half of the map, or with an
+                // escort-worthy local superiority — otherwise raiders walk it first
                 me.distance_2d(spot) <= 200.0
+                    || ctx.our_start.distance_2d(spot) <= 900.0
                     || threat.local_superiority(ctx, roles, spot, ESCORT_ARMY_RADIUS, ESCORT_ENEMY_RADIUS)
             })
             .min_by(|a, b| {
@@ -338,7 +348,7 @@ impl Planner {
             unit.move_to(spot, opt::NONE);
         } else if let Some(mex) = ctx.defs.mex {
             let cost = metal_cost(ctx, mex);
-            if war.can_spend(ctx, ProjectKind::Expansion, cost) && cur >= cost && build_at(cb, unit, mex, spot, 128.0) {
+            if war.can_spend(ctx, ProjectKind::Expansion, cost) && cur >= cost && build_mex(cb, unit, mex, spot) {
                 ordered.insert(i);
             }
         }
