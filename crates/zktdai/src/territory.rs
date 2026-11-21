@@ -20,6 +20,10 @@ pub struct Territory {
     /// Frame the spot was last seen held by an enemy finished mex, -1 if the
     /// spot is known neutral.
     pub enemy_seen: Vec<i32>,
+    /// Frame a mex order on this spot expired without a nanoframe appearing
+    /// (silently denied — claimed spot, dead builder, blocked footprint).
+    /// -1 = never. Spots are re-considered after 7200 frames.
+    pub blocked: Vec<i32>,
     /// Power-diagram weight per spot: `0.25 * min_pair_dist * clamp(metal/2,
     /// 0.5, 2.5)` — high-yield spots claim bigger cells, crowded spots smaller
     /// (same weighting as gui_metal_territories' BuildCells).
@@ -42,6 +46,7 @@ impl Territory {
             owned: vec![false; n_spots],
             enemy: vec![false; n_spots],
             enemy_seen: vec![-1; n_spots],
+            blocked: vec![-1; n_spots],
             weights: vec![0.0; n_spots],
             our_centroid: our_start,
             enemy_centroid: enemy_target,
@@ -141,6 +146,9 @@ impl Territory {
         if self.weights.len() != ctx.spots.len() {
             self.weights = vec![0.0; ctx.spots.len()];
         }
+        if self.blocked.len() != ctx.spots.len() {
+            self.blocked = vec![-1; ctx.spots.len()];
+        }
         let mut nearest = f32::MAX;
         for a in &ctx.spots {
             for b in &ctx.spots {
@@ -174,6 +182,11 @@ impl Territory {
     /// The next spot to claim. Below the territory target: the nearest free
     /// spot, aggressively. Above it: a slow creep — only cheap-to-hold spots
     /// (near our centroid, far from the enemy's), rate-limited to one per 30 s.
+    /// True if the spot is not recently blocked by a failed mex order.
+    pub fn not_blocked(&self, ctx: &Ctx, i: usize) -> bool {
+        self.blocked.get(i).copied().unwrap_or(-1) < 0 || ctx.frame - self.blocked[i] > 7200
+    }
+
     pub fn expansion_spot(&mut self, ctx: &Ctx, ordered: &HashSet<usize>) -> Option<usize> {
         // Power distance to our centroid: squared distance minus the spot's
         // weight, so high-yield spots win even a bit farther out (the same
@@ -184,7 +197,9 @@ impl Territory {
         };
         let free = |spots: &mut dyn Iterator<Item = (usize, &Vec3)>| {
             spots
-                .filter(|(i, _)| !self.owned[*i] && !self.enemy[*i] && !ordered.contains(i))
+                .filter(|(i, _)| {
+                    !self.owned[*i] && !self.enemy[*i] && !ordered.contains(i) && self.not_blocked(ctx, *i)
+                })
                 .min_by(|(i, a), (j, b)| score(*i, a).partial_cmp(&score(*j, b)).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(i, _)| i)
         };
@@ -202,6 +217,7 @@ impl Territory {
                 !self.owned[*i]
                     && !self.enemy[*i]
                     && !ordered.contains(i)
+                    && self.not_blocked(ctx, *i)
                     && s.distance_2d(self.our_centroid) < 1500.0
                     && s.distance_2d(self.enemy_centroid) > 2000.0
             })

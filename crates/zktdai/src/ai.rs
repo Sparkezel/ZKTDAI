@@ -303,13 +303,25 @@ impl SkirmishAi for Zktdai {
                     let cb = self.ctx.cb;
                     let spots = self.ctx.spots.clone();
                     let owned = self.terr.owned.clone();
+                    let mut expired = Vec::new();
                     self.ordered_spots.retain(|i| {
-                        owned[*i]
+                        let keep = owned[*i]
                             || cb
                                 .team_units()
                                 .iter()
-                                .any(|u| u.def() == Some(mex) && u.pos().distance_2d(spots[*i]) < 96.0)
+                                .any(|u| u.def() == Some(mex) && u.pos().distance_2d(spots[*i]) < 96.0);
+                        if !keep {
+                            expired.push(*i);
+                        }
+                        keep
                     });
+                    // Orders that expired without a nanoframe were silently
+                    // denied (claimed spot, dead builder): don't re-order them
+                    // for a while, or one con burns the whole game on one spot.
+                    for i in expired {
+                        self.terr.blocked[i] = frame;
+                        cb.log(&format!("[zktdai] mex order on spot {i} expired unbuilt, blocking for 7200f"));
+                    }
                 }
                 if frame % 120 == 0 {
                     let idle: Vec<i32> = self
@@ -522,7 +534,7 @@ impl Zktdai {
             }
             r if r.is_combat() || r.is_scout() => {
                 let push = self.army.push_ready(&self.ctx, &self.roles) || self.army.all_in(&self.ctx);
-                self.army.combat_idle(&self.ctx, unit, r, &self.terr, push, self.fob.pos);
+                self.army.combat_idle(&self.ctx, unit, r, &self.roles, &self.terr, &self.threat, push, self.fob.pos);
             }
             _ => {}
         }

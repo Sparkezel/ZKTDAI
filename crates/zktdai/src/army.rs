@@ -105,7 +105,7 @@ impl Army {
         // But don't flood cons before the army exists: hold at 2 cons until we
         // have a few combat units, then let the planner's number through.
         let combat = roles.values().filter(|r| r.is_combat()).count();
-        let con_cap = if combat < 4 { 2 } else { want_cons };
+        let con_cap = if combat < 4 { 3 } else { want_cons };
         let workers =
             cb.team_units().iter().filter(|u| roles.get(&u.id()) == Some(&Role::Worker) && !u.is_being_built()).count();
         if workers < con_cap
@@ -138,11 +138,13 @@ impl Army {
             return;
         }
         // normal bucket: army production is capped at `army_share` of income per
-        // window (greedy below 10 m/s); the rest floats as reserve or feeds porc
-        if !war.can_spend(ctx, ProjectKind::Army, cost) {
+        // window (greedy below 10 m/s); the rest floats as reserve or feeds porc.
+        // Emergency: with a near-empty army, spend whatever metal is on hand —
+        // porc/eco will otherwise drain it and the army stays at zero forever.
+        if !(war.can_spend(ctx, ProjectKind::Army, cost) || (combat < 6 && cur >= cost)) {
             if ctx.frame % 600 == 0 {
                 cb.log(&format!(
-                    "[army] factory {} blocked by war chest: want {} cost {:.0}",
+                    "[army] factory {} blocked by war chest: want {} cost {:.0} combat {combat}",
                     factory.id(),
                     def.name(),
                     cost
@@ -198,7 +200,18 @@ impl Army {
         def.or_else(|| self.next_unit(ctx, false, fac))
     }
 
-    pub fn combat_idle(&mut self, ctx: &Ctx, unit: Unit, role: Role, terr: &Territory, push: bool, fob: Option<Vec3>) {
+    #[allow(clippy::too_many_arguments)] // ctx+roles+terr+threat are the shared read view
+    pub fn combat_idle(
+        &mut self,
+        ctx: &Ctx,
+        unit: Unit,
+        role: Role,
+        roles: &HashMap<i32, Role>,
+        terr: &Territory,
+        threat: &Threat,
+        push: bool,
+        fob: Option<Vec3>,
+    ) {
         let cb = ctx.cb;
         let me = unit.pos();
         // hurt units and skittish scouts fall back to the forward base
@@ -206,6 +219,35 @@ impl Army {
         let by_dist = |a: &Unit, b: &Unit| {
             a.pos().distance_2d(me).partial_cmp(&b.pos().distance_2d(me)).unwrap_or(std::cmp::Ordering::Equal)
         };
+        // Defense first: if the enemy is at our base or at any mex we hold,
+        // engage there instead of raiding — a raid with no army at home is
+        // how we lose every mex and then the game.
+        let home_under_attack = threat.incursion_inbound(ctx.our_start, 1600.0)
+            || terr.owned.iter().zip(&ctx.spots).any(|(o, s)| *o && threat.enemy_near(*s, 700.0));
+        if home_under_attack && !self.is_scout(unit.id()) {
+            let target = cb
+                .enemy_units()
+                .into_iter()
+                .filter(|e| {
+                    e.pos().distance_2d(ctx.our_start) < 2400.0
+                        || terr.owned.iter().zip(&ctx.spots).any(|(o, s)| *o && e.pos().distance_2d(*s) < 900.0)
+                })
+                .min_by(by_dist);
+            if let Some(t) = target {
+                unit.attack(t, opt::NONE);
+                return;
+            }
+            let anchor = terr
+                .owned
+                .iter()
+                .zip(&ctx.spots)
+                .filter(|(o, _)| **o)
+                .map(|(_, s)| *s)
+                .min_by(|a, b| a.distance_2d(me).partial_cmp(&b.distance_2d(me)).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap_or(terr.our_centroid);
+            unit.fight(anchor, opt::NONE);
+            return;
+        }
         // scouts are skittish: retreat early, avoid armed enemies
         if self.is_scout(unit.id()) || role == Role::Scout {
             if unit.health() < unit.max_health() * 0.5 {
@@ -241,15 +283,19 @@ impl Army {
         }
         match role {
             Role::Raider => {
-                if ctx.opts.raiding {
-                    let target = terr
-                        .enemy_spots
-                        .iter()
-                        .min_by(|a, b| {
-                            a.distance_2d(me).partial_cmp(&b.distance_2d(me)).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .copied()
-                        .unwrap_or(ctx.enemy_target);
+                // Raid only when the target is (or we are) strong enough:
+                // local superiority at the target, or a full push. Otherwise
+                // hold the front — raiders that suicide into the enemy blob
+                // leave the mexes undefended.
+                let target = terr
+                    .enemy_spots
+                    .iter()
+                    .min_by(|a, b| {
+                        a.distance_2d(me).partial_cmp(&b.distance_2d(me)).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .copied()
+                    .unwrap_or(ctx.enemy_target);
+                if ctx.opts.raiding && (push || threat.local_superiority(ctx, roles, target, 400.0, 600.0)) {
                     unit.fight(target, opt::NONE);
                 } else {
                     unit.fight(terr.front, opt::NONE);

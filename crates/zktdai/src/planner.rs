@@ -12,7 +12,7 @@ use springai::{NO_TIMEOUT, Unit, Vec3, opt};
 
 use crate::ai::Ctx;
 use crate::defs::{Role, cmd};
-use crate::economy::{build_at, build_mex, metal_cost, power_def, wants_energy};
+use crate::economy::{build_at, build_at_clear, build_mex, metal_cost, power_def, wants_energy};
 use crate::territory::Territory;
 use crate::threat::Threat;
 use crate::war_chest::{ProjectKind, ProjectState, WarChest};
@@ -75,6 +75,8 @@ pub struct Planner {
     escort_cd: i32,
     air_fac_queued: bool,
     air_fac_done: bool,
+    second_fac_queued: bool,
+    second_fac_done: bool,
 }
 
 impl Planner {
@@ -90,6 +92,8 @@ impl Planner {
             escort_cd: 0,
             air_fac_queued: false,
             air_fac_done: false,
+            second_fac_queued: false,
+            second_fac_done: false,
         }
     }
 
@@ -104,9 +108,9 @@ impl Planner {
         let Some(metal) = ctx.metal else { return 1 };
         let income = ctx.cb.economy().income(metal);
         let free = ctx.spots.iter().zip(&terr.owned).zip(&terr.enemy).filter(|((_, o), e)| !**o && !**e).count();
-        let expand = free.min(3);
+        let expand = free.min(5);
         let reclaim = if income < 20.0 { 1 } else { (1 + (income / 25.0) as usize).min(4) };
-        (2 + expand + reclaim).min(10)
+        (2 + expand + reclaim).min(12)
     }
 
     /// Track a wreck (from UnitDestroyed/EnemyDestroyed) for reclaim jobs.
@@ -177,7 +181,7 @@ impl Planner {
             let Some(unit) = Unit::from_id(cb, id) else { continue };
             match job {
                 ConJob::Energy => self.energy_step(ctx, unit, war),
-                ConJob::Base => self.base_step(ctx, unit, war),
+                ConJob::Base => self.base_step(ctx, unit, roles, war),
                 ConJob::Expand => self.expand_step(ctx, unit, roles, terr, ordered, threat, war),
                 ConJob::Reclaim => self.reclaim_step(unit, terr, pooled, group_pos.get(&id).copied()),
             }
@@ -193,7 +197,7 @@ impl Planner {
         let free = ctx.spots.iter().zip(&terr.owned).zip(&terr.enemy).filter(|((_, o), e)| !**o && !**e).count();
         let _ = income;
         let want: [(ConJob, usize); 4] =
-            [(ConJob::Energy, 1), (ConJob::Base, 1), (ConJob::Expand, free.min(3)), (ConJob::Reclaim, usize::MAX)];
+            [(ConJob::Energy, 1), (ConJob::Base, 1), (ConJob::Expand, free.min(5)), (ConJob::Reclaim, usize::MAX)];
         let mut counts: HashMap<ConJob, usize> = HashMap::new();
         let mut new_jobs: HashMap<i32, ConJob> = HashMap::new();
         let mut old: Vec<(i32, ConJob)> = self.jobs.iter().map(|(id, j)| (*id, *j)).collect();
@@ -263,10 +267,35 @@ impl Planner {
     }
 
     /// The base constructor: holds the base and, from the mid game on, opens the
-    /// air build options (air factory). Caretakers/express defense on demand are
-    /// porc's job; unit build-option expansion is v0.3.
-    fn base_step(&mut self, ctx: &Ctx, unit: Unit, war: &mut WarChest) {
+    /// air build options (air factory) and a second factory. Caretakers/express
+    /// defense on demand are porc's job; unit build-option expansion is v0.3.
+    fn base_step(&mut self, ctx: &Ctx, unit: Unit, roles: &HashMap<i32, Role>, war: &mut WarChest) {
         let cb = ctx.cb;
+        // Second factory once the economy can afford it: one factory cannot
+        // replace a raider army that is constantly fighting.
+        if !self.second_fac_done {
+            let income = ctx.metal.map(|m| cb.economy().income(m)).unwrap_or(0.0);
+            let factories = cb
+                .team_units()
+                .iter()
+                .filter(|u| roles.get(&u.id()) == Some(&Role::Factory) && !u.is_being_built())
+                .count();
+            let want_second = factories < 2 && (income >= 25.0 || ctx.frame >= 12000);
+            if want_second && let Some(f) = ctx.defs.factory {
+                let cost = metal_cost(ctx, f);
+                if !self.second_fac_queued {
+                    // Reserve the cost (stops army/porc draining it) but start
+                    // the build immediately: buildings don't need the full metal
+                    // up front, construction is paid per frame from build power.
+                    self.second_fac_queued = true;
+                    war.request_save(ctx, "second-factory", ProjectKind::Expansion, Some(f), cost);
+                }
+                if build_at_clear(cb, ctx, roles, unit, f, ctx.our_start, 500.0) {
+                    self.second_fac_done = true;
+                    cb.log("[planner] second factory started");
+                }
+            }
+        }
         if !self.air_fac_done {
             let income = ctx.metal.map(|m| cb.economy().income(m)).unwrap_or(0.0);
             let air_exists = cb
@@ -322,13 +351,13 @@ impl Planner {
         // ESCORT_ENEMY_RADIUS and no army within ESCORT_ARMY_RADIUS — unless
         // this constructor already stands there (don't strand it)
         let target = (0..ctx.spots.len())
-            .filter(|i| !terr.owned[*i] && !terr.enemy[*i] && !ordered.contains(i))
+            .filter(|i| !terr.owned[*i] && !terr.enemy[*i] && !ordered.contains(i) && terr.not_blocked(ctx, *i))
             .filter(|i| {
                 let spot = ctx.spots[*i];
                 // near the worker, or in the home half of the map, or with an
                 // escort-worthy local superiority — otherwise raiders walk it first
                 me.distance_2d(spot) <= 200.0
-                    || ctx.our_start.distance_2d(spot) <= 900.0
+                    || ctx.our_start.distance_2d(spot) <= 1600.0
                     || threat.local_superiority(ctx, roles, spot, ESCORT_ARMY_RADIUS, ESCORT_ENEMY_RADIUS)
             })
             .min_by(|a, b| {

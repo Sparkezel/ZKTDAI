@@ -144,3 +144,37 @@ Paste this into a fresh assistant session to continue. Repo: `Sparkezel/ZKTDAI`,
 - cmd 34220 = CMD_PRIORITY (0/1/2); terraform 39801/39737, tags from 1<<20 per (team,tag), KIND_LEVEL=1.0.
 - Build string in logs: `build=<git describe>-dirty` from `env!("ZKTDAI_BUILD")`.
 - dll-smoke exit codes: 101 = panic contained, 100 = unknown instance; needs an absolute path here.
+
+## 6. Status at 2026-11-21 (after `fc3d88f`, pushed; PR #17 head moving)
+- **Factory-never-appeared root cause found and fixed (`68edb95`)**: `GiveOrder` returning true only
+  means queued — `CBuilderCAI::GiveCommandReal` silently drops builds whose footprint is blocked
+  (`IsBuildPosBlocked`), and a later non-shift order replaces a pending one. At f=0 the idle
+  sweep's mex order cancelled the commander's factory order → no `factorycloak` nanoframe ever
+  appeared → `factory_idle` never ran → zero combat units all game. Fix: `Opening::Factory`
+  advances only once a factory unit/nanoframe exists, and retries the build on a spiral of sites
+  around the real spawn pos (raw `unit.build`, first factory free). Verified on Comet Catcher
+  Redux: factorycloak f=30, first con f=76, first cloakraid f=858; f=9000 → 32 units/dmg 1818.
+- **War-chest window cap blocked single expensive units (`fc3d88f`)**: cap compared
+  `spent + cost <= cap`, so a 65-metal raider vs cap ~77 at 12.8 m/s income was fine but heavier
+  units were blocked forever; now first purchase per 300f window always goes through
+  (`spent >= cap` blocks). Factory now pumps raiders continuously. `factory_idle` logs
+  builds/waits/blocks (throttled 600f).
+- **Territory model ported from ZK's `gui_metal_territories.lua` (`a2a1e82`)**: only finished mexes
+  own spots (`is_being_built` filter both sides); enemy ownership is last-known until the spot is
+  seen empty (LOS map); per-spot yield read from `mex_metal<i>` rules params → power-Voronoi
+  weights, `expansion_spot` scores by power distance (d² − w). The widget's GL/Voronoi rendering
+  itself is not useful for the AI.
+- **Defense-first combat (`fc3d88f`, uncommitted at the time of writing → next commit)**:
+  `combat_idle` takes `threat`; if the base is under incursion or any owned mex has enemies near,
+  all combat units engage there; raiders only raid enemy spots when pushing or with local
+  superiority at the target, otherwise hold the front.
+- **Map selection**: `run.ps1` already takes `-MapName` (default "Altored Divide Bar Remake 1.6"),
+  map file auto-derived as lowercase+underscores+`.sd7`, e.g. `-MapName "Comet Catcher Redux v3.1"`
+  → `comet_catcher_redux_v3.1.sd7`. Verified working (run9/run10/run11).
+- **Measured on Comet Catcher Redux v3.1 vs CircuitAI:stable, 10x** (run9, f=9000, build 68edb95):
+  us 32 units/minc 15.1/dmg 1818 vs CAI 51/28.5/3436. run10 (full game to f=27146, build
+  fc3d88f): f=16200 us 50/25.3/14379 vs CAI 112/56.8/16426; **LOSS at f=27146** — late-game
+  CAI pushes the base with 28 units while we have combat=0, territory 0%, minc 2.0. Midgame
+  collapse = defense/map-control, not production.
+- Run dirs: run7/run8 = Altored Divide, run9/10/11 = Comet Catcher Redux. Logs:
+  `<workdir>/infolog.txt` (all), `<workdir>/out/console-1.log`, replays `<workdir>/demos/*.sdfz`.
