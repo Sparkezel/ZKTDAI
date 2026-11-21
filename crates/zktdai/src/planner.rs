@@ -8,11 +8,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use springai::{NO_TIMEOUT, Unit, Vec3, opt};
+use springai::{NO_TIMEOUT, Unit, UnitDef, Vec3, opt};
 
 use crate::ai::Ctx;
 use crate::defs::{Role, cmd};
-use crate::economy::{build_at, build_at_clear, build_mex, metal_cost, power_def, wants_energy};
+use crate::economy::{build_at, build_at_clear, build_mex, has_queued_mex_build, metal_cost, power_def, wants_energy};
 use crate::territory::Territory;
 use crate::threat::Threat;
 use crate::war_chest::{ProjectKind, ProjectState, WarChest};
@@ -29,6 +29,16 @@ pub enum ConJob {
     Expand,
     /// Reclaims wrecks; pooled into taskgroups from the mid game on.
     Reclaim,
+}
+
+/// A constructor's in-flight approach to a mex spot (zkgbai's `Approach`):
+/// re-send the move+build chain only when the queue lost the build order or
+/// no progress (32 elmos closer) was made within 300 frames.
+#[derive(Clone, Copy)]
+struct Approach {
+    spot: usize,
+    sent: i32,
+    best: f32,
 }
 
 /// A pooled group of constructors with a shared objective and position.
@@ -77,6 +87,8 @@ pub struct Planner {
     air_fac_done: bool,
     second_fac_queued: bool,
     second_fac_done: bool,
+    /// Per-constructor in-flight mex approach (spot, sent frame, best dist).
+    approach: HashMap<i32, Approach>,
 }
 
 impl Planner {
@@ -94,6 +106,7 @@ impl Planner {
             air_fac_done: false,
             second_fac_queued: false,
             second_fac_done: false,
+            approach: HashMap::new(),
         }
     }
 
@@ -140,6 +153,7 @@ impl Planner {
         let alive: HashSet<i32> = cb.team_units().iter().map(|u| u.id()).collect();
         self.jobs.retain(|id, _| alive.contains(id));
         self.high_prio.retain(|id| alive.contains(id));
+        self.approach.retain(|id, _| alive.contains(id));
         for g in &mut self.groups {
             g.members.retain(|id| alive.contains(id));
         }
@@ -333,6 +347,64 @@ impl Planner {
     /// An expansion constructor: beeline to the nearest untaken mex, build it,
     /// then secure the cluster (lotus, + picket late); escorted by up to 3 idle
     /// raiders (or 1 skirm/riot).
+    /// Send the approach + mex build as one SHIFT chain: the build stays
+    /// queued behind the move and the constructor keeps building until the
+    /// mex is finished (it must not walk off leaving an unfinished frame).
+    fn send_mex_chain(
+        &mut self,
+        ctx: &Ctx,
+        unit: &Unit,
+        mex: UnitDef,
+        i: usize,
+        war: &WarChest,
+        ordered: &mut HashSet<usize>,
+    ) {
+        let cb = ctx.cb;
+        let spot = ctx.spots[i];
+        let cur = ctx.metal.map(|m| cb.economy().current(m)).unwrap_or(0.0);
+        let cost = metal_cost(ctx, mex);
+        if !(war.can_spend(ctx, ProjectKind::Expansion, cost) && cur >= cost) {
+            return;
+        }
+        if unit.pos().distance_2d(spot) > 200.0 {
+            unit.move_to(spot, opt::NONE);
+            build_mex(cb, *unit, mex, spot, opt::SHIFT_KEY);
+        } else {
+            build_mex(cb, *unit, mex, spot, opt::NONE);
+        }
+        ordered.insert(i);
+        self.approach.insert(unit.id(), Approach { spot: i, sent: ctx.frame, best: unit.pos().distance_2d(spot) });
+    }
+
+    /// Escort: up to 3 idle raiders, else 1 skirm/riot, guard this constructor.
+    fn escort(&mut self, ctx: &Ctx, unit: &Unit, roles: &HashMap<i32, Role>) {
+        let cb = ctx.cb;
+        let me = unit.pos();
+        if ctx.frame < self.escort_cd {
+            return;
+        }
+        self.escort_cd = ctx.frame + ESCORT_FRAMES;
+        let mut escorts: Vec<Unit> = cb
+            .team_units()
+            .into_iter()
+            .filter(|u| roles.get(&u.id()) == Some(&Role::Raider) && u.num_current_commands() == 0)
+            .collect();
+        escorts.sort_by(|a, b| {
+            a.pos().distance_2d(me).partial_cmp(&b.pos().distance_2d(me)).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if escorts.is_empty() {
+            escorts = cb
+                .team_units()
+                .into_iter()
+                .filter(|u| roles.get(&u.id()) == Some(&Role::Skirm) && u.num_current_commands() == 0)
+                .take(1)
+                .collect();
+        }
+        for e in escorts.iter().take(3) {
+            e.guard(*unit, opt::NONE);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn expand_step(
         &mut self,
@@ -347,9 +419,44 @@ impl Planner {
         let cb = ctx.cb;
         let cur = ctx.metal.map(|m| cb.economy().current(m)).unwrap_or(0.0);
         let me = unit.pos();
-        // escort rule (#11): skip spots that are hot — enemy within
-        // ESCORT_ENEMY_RADIUS and no army within ESCORT_ARMY_RADIUS — unless
-        // this constructor already stands there (don't strand it)
+        let Some(mex) = ctx.defs.mex else { return };
+        // 1) Continue the current approach if the target is still valid and the
+        // order chain is intact (zkgbai's approach/queued_build_matches). The
+        // engine can silently drop a build; detect that via the queue and
+        // re-send. Re-send a stalled approach at most every 300f with no
+        // 32-elmo progress.
+        if let Some(a) = self.approach.get(&unit.id()).copied() {
+            if a.spot < ctx.spots.len() && !terr.owned[a.spot] && !terr.enemy[a.spot] {
+                let spot = ctx.spots[a.spot];
+                let d = me.distance_2d(spot);
+                let walking = d > 200.0 && unit.num_current_commands() > 0;
+                let chain_ok = has_queued_mex_build(&unit, mex, spot) || walking;
+                let stalled = ctx.frame - a.sent > 300 && d > a.best - 32.0;
+                if chain_ok && !stalled {
+                    if d < a.best {
+                        self.approach.insert(unit.id(), Approach { best: d, ..a });
+                    }
+                    // in range but the build order vanished from the queue: re-send it
+                    if d <= 200.0 && !has_queued_mex_build(&unit, mex, spot) {
+                        let cost = metal_cost(ctx, mex);
+                        if war.can_spend(ctx, ProjectKind::Expansion, cost) && cur >= cost {
+                            build_mex(cb, unit, mex, spot, opt::SHIFT_KEY);
+                            ordered.insert(a.spot);
+                        }
+                    }
+                    self.escort(ctx, &unit, roles);
+                    return;
+                }
+                // broken or stalled: drop and re-send the chain below
+                self.approach.remove(&unit.id());
+                self.send_mex_chain(ctx, &unit, mex, a.spot, war, ordered);
+                return;
+            }
+            self.approach.remove(&unit.id());
+        }
+        // 2) Pick a new target. Escort rule (#11): skip spots that are hot —
+        // enemy within ESCORT_ENEMY_RADIUS and no army within
+        // ESCORT_ARMY_RADIUS — unless this constructor already stands there.
         let target = (0..ctx.spots.len())
             .filter(|i| !terr.owned[*i] && !terr.enemy[*i] && !ordered.contains(i) && terr.not_blocked(ctx, *i))
             .filter(|i| {
@@ -372,25 +479,21 @@ impl Planner {
             }
             return;
         };
-        let spot = ctx.spots[i];
-        if me.distance_2d(spot) > 200.0 {
-            unit.move_to(spot, opt::NONE);
-        } else if let Some(mex) = ctx.defs.mex {
-            let cost = metal_cost(ctx, mex);
-            if war.can_spend(ctx, ProjectKind::Expansion, cost) && cur >= cost && build_mex(cb, unit, mex, spot) {
-                ordered.insert(i);
-            }
-        }
-        // secure the cluster once the mex is up: lotus, plus a picket past the
-        // 3rd cluster or 14 total mexes
+        self.send_mex_chain(ctx, &unit, mex, i, war, ordered);
+        // 3) secure the cluster once the mex is up: lotus, plus a picket past
+        // the 3rd cluster or 14 total mexes
         if terr.owned[i] {
+            self.approach.remove(&unit.id());
             let owned_count = terr.owned.iter().filter(|o| **o).count();
             let picket_needed = self.clusters_secured >= 3 || owned_count > 14;
             let lotus = ctx.defs.turret_ladder.first().copied();
             let def = if picket_needed { ctx.defs.picket.or(lotus) } else { lotus };
             if let Some(d) = def {
                 let cost = metal_cost(ctx, d);
-                if war.can_spend(ctx, ProjectKind::Porc, cost) && cur >= cost && build_at(cb, unit, d, spot, 200.0) {
+                if war.can_spend(ctx, ProjectKind::Porc, cost)
+                    && cur >= cost
+                    && build_at(cb, unit, d, ctx.spots[i], 200.0)
+                {
                     if !picket_needed {
                         self.clusters_secured += 1;
                     }
@@ -404,29 +507,7 @@ impl Planner {
                 }
             }
         }
-        // escort: up to 3 idle raiders, else 1 skirm/riot, guard this constructor
-        if ctx.frame >= self.escort_cd {
-            self.escort_cd = ctx.frame + ESCORT_FRAMES;
-            let mut escorts: Vec<Unit> = cb
-                .team_units()
-                .into_iter()
-                .filter(|u| roles.get(&u.id()) == Some(&Role::Raider) && u.num_current_commands() == 0)
-                .collect();
-            escorts.sort_by(|a, b| {
-                a.pos().distance_2d(me).partial_cmp(&b.pos().distance_2d(me)).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            if escorts.is_empty() {
-                escorts = cb
-                    .team_units()
-                    .into_iter()
-                    .filter(|u| roles.get(&u.id()) == Some(&Role::Skirm) && u.num_current_commands() == 0)
-                    .take(1)
-                    .collect();
-            }
-            for e in escorts.iter().take(3) {
-                e.guard(unit, opt::NONE);
-            }
-        }
+        self.escort(ctx, &unit, roles);
     }
 
     /// A reclaimer: nearest wreck, else its taskgroup's frontline position

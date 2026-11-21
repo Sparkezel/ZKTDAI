@@ -52,18 +52,33 @@ pub fn build_at(cb: Callback, unit: Unit, def: UnitDef, want: Vec3, search_radiu
 /// raw spot coords (which match the rules params we read in Init) is what gets
 /// accepted; the engine snaps the footprint itself. Falls back to a nearby
 /// snapped site if the direct order is refused.
-pub fn build_mex(cb: Callback, unit: Unit, mex: UnitDef, spot: Vec3) -> bool {
-    if unit.build(mex, spot, 0, opt::NONE) {
+pub fn build_mex(cb: Callback, unit: Unit, mex: UnitDef, spot: Vec3, opts: i16) -> bool {
+    if unit.build(mex, spot, 0, opts) {
         cb.log(&format!(
-            "[eco] build_mex {} unit={} at spot ({:.1},{:.1}) direct",
+            "[eco] build_mex {} unit={} at spot ({:.1},{:.1}) direct{}",
             mex.name(),
             unit.id(),
             spot.x,
-            spot.z
+            spot.z,
+            if opts & opt::SHIFT_KEY != 0 { " (shift-queued)" } else { "" }
         ));
         return true;
     }
     build_at(cb, unit, mex, spot, 64.0)
+}
+
+/// True if the unit's command queue already contains a build order for `mex`
+/// at (within 96 elmos of) `spot` — zkgbai's `queued_build_matches`: the engine
+/// can silently drop a build (blocked footprint, AllowCommand denial), and we
+/// must not stack duplicate orders nor assume the order is still alive.
+pub fn has_queued_mex_build(unit: &Unit, mex: UnitDef, spot: Vec3) -> bool {
+    let want = -mex.id();
+    unit.current_commands().iter().any(|c| {
+        c.id() == want
+            && c.params().len() >= 3
+            && (c.params()[0] - spot.x).abs() < 96.0
+            && (c.params()[2] - spot.z).abs() < 96.0
+    })
 }
 
 /// True if `site` would block a friendly factory's exit lane. Factories need a
@@ -177,6 +192,10 @@ pub struct Economy {
     /// one. So we retry on a spiral of sites until a factory nanoframe exists.
     factory_tries: usize,
     factory_last_try: i32,
+    /// Commander's current opening-mex approach: (spot, sent frame, best
+    /// distance) — for stall detection so we don't re-issue the move+build
+    /// chain every tick.
+    com_mex: Option<(usize, i32, f32)>,
 }
 
 impl Economy {
@@ -191,6 +210,7 @@ impl Economy {
             lotus_built: false,
             factory_tries: 0,
             factory_last_try: -1000,
+            com_mex: None,
         }
     }
 
@@ -315,17 +335,47 @@ impl Economy {
                     self.opening = Opening::WindGrid;
                     return;
                 };
-                if self.opening_mexes.iter().all(|i| ordered.contains(i) || terr.owned[*i]) {
+                // advance only when every opening mex is actually finished
+                // (owned) or its order was denied (blocked) — not merely
+                // ordered, or the commander walks off leaving nanoframes
+                if self.opening_mexes.iter().all(|i| terr.owned[*i] || !terr.not_blocked(ctx, *i)) {
                     self.grid_pylons = Self::plan_grid_pylons(ctx, &self.opening_mexes);
                     self.opening = Opening::WindGrid;
                     return;
                 }
-                // tandem: workers take the same spots via expansion_spot
-                if let Some(i) = self.opening_mexes.iter().copied().find(|i| !ordered.contains(i) && !terr.owned[*i])
-                    && cur >= metal_cost(ctx, mex)
-                    && build_mex(cb, unit, mex, ctx.spots[i])
-                {
-                    ordered.insert(i);
+                // tandem: workers take the same spots via expansion_spot.
+                // Send move + build as one SHIFT chain (zkgbai pattern): the
+                // build stays queued behind the move and the commander keeps
+                // building until the mex is finished — it must not walk off to
+                // the next spot leaving an unfinished nanoframe. Only re-issue
+                // when the queue lost the build order (engine dropped it) or
+                // the approach stalled.
+                let next = self
+                    .opening_mexes
+                    .iter()
+                    .copied()
+                    .find(|i| !ordered.contains(i) && !terr.owned[*i] && terr.not_blocked(ctx, *i));
+                if let Some(i) = next {
+                    let spot = ctx.spots[i];
+                    let d = unit.pos().distance_2d(spot);
+                    let busy = unit.num_current_commands() > 0;
+                    let has_build = has_queued_mex_build(&unit, mex, spot);
+                    let stalled =
+                        self.com_mex.is_some_and(|(s, sent, best)| s == i && ctx.frame - sent > 300 && d > best - 32.0);
+                    if !has_build
+                        && (!busy || stalled)
+                        && war.can_spend(ctx, ProjectKind::Expansion, metal_cost(ctx, mex))
+                        && cur >= metal_cost(ctx, mex)
+                    {
+                        if d > 200.0 {
+                            unit.move_to(spot, opt::NONE);
+                            build_mex(cb, unit, mex, spot, opt::SHIFT_KEY);
+                        } else {
+                            build_mex(cb, unit, mex, spot, opt::NONE);
+                        }
+                        ordered.insert(i);
+                        self.com_mex = Some((i, ctx.frame, d));
+                    }
                 }
                 return;
             }
@@ -395,8 +445,16 @@ impl Economy {
             && let Some(i) = terr.expansion_spot(ctx, ordered)
             && war.can_spend(ctx, ProjectKind::Expansion, metal_cost(ctx, mex))
             && cur >= metal_cost(ctx, mex)
-            && build_mex(cb, unit, mex, ctx.spots[i])
         {
+            // move + build as one SHIFT chain so the worker keeps building
+            // until the mex is finished instead of walking off
+            let spot = ctx.spots[i];
+            if unit.pos().distance_2d(spot) > 200.0 {
+                unit.move_to(spot, opt::NONE);
+                build_mex(cb, unit, mex, spot, opt::SHIFT_KEY);
+            } else {
+                build_mex(cb, unit, mex, spot, opt::NONE);
+            }
             ordered.insert(i);
             return;
         }
@@ -463,8 +521,16 @@ impl Economy {
         if let Some(i) = terr.expansion_spot(ctx, ordered)
             && war.can_spend(ctx, ProjectKind::Expansion, metal_cost(ctx, mex))
             && cur >= metal_cost(ctx, mex)
-            && build_mex(cb, unit, mex, ctx.spots[i])
         {
+            // move + build as one SHIFT chain so the worker keeps building
+            // until the mex is finished instead of walking off
+            let spot = ctx.spots[i];
+            if unit.pos().distance_2d(spot) > 200.0 {
+                unit.move_to(spot, opt::NONE);
+                build_mex(cb, unit, mex, spot, opt::SHIFT_KEY);
+            } else {
+                build_mex(cb, unit, mex, spot, opt::NONE);
+            }
             ordered.insert(i);
             return;
         }
