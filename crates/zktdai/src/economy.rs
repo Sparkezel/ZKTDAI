@@ -193,6 +193,19 @@ fn current_metal(ctx: &Ctx) -> f32 {
     ctx.metal.map(|m| ctx.cb.economy().current(m)).unwrap_or(0.0)
 }
 
+/// Nearest empty (not ours, not enemy's, not recently denied, not already
+/// ordered) metal spot to `near` — the commander's "next closest empty mex".
+fn mex_candidate(ctx: &Ctx, terr: &Territory, ordered: &HashSet<usize>, near: Vec3) -> Option<usize> {
+    (0..ctx.spots.len())
+        .filter(|i| !terr.owned[*i] && !terr.enemy[*i] && !ordered.contains(i) && terr.not_blocked(ctx, *i))
+        .min_by(|a, b| {
+            ctx.spots[*a]
+                .distance_2d(near)
+                .partial_cmp(&ctx.spots[*b].distance_2d(near))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
 pub fn metal_cost(ctx: &Ctx, def: UnitDef) -> f32 {
     ctx.defs.metal().map(|m| def.cost(m)).unwrap_or(f32::MAX)
 }
@@ -254,6 +267,23 @@ pub struct Economy {
 }
 
 impl Economy {
+    /// Current opening phase name (operator view).
+    pub fn opening_tag(&self) -> &'static str {
+        match self.opening {
+            Opening::Factory => "factory",
+            Opening::Con => "con",
+            Opening::Mexes => "mexes",
+            Opening::WindGrid => "wind-grid",
+            Opening::Solars => "solars",
+            Opening::Done => "done",
+        }
+    }
+
+    /// Spot index the commander is currently working on, if any.
+    pub fn com_mex_spot(&self) -> Option<usize> {
+        self.com_mex.map(|(s, _, _)| s)
+    }
+
     pub fn new() -> Self {
         Economy {
             opening: Opening::Factory,
@@ -382,30 +412,24 @@ impl Economy {
                     self.opening = Opening::WindGrid;
                     return;
                 }
-                // tandem: workers take the same spots via expansion_spot.
-                // Send move + build as one SHIFT chain (zkgbai pattern): the
-                // build stays queued behind the move and the commander keeps
-                // building until the mex is finished — it must not walk off to
-                // the next spot leaving an unfinished nanoframe. Only re-issue
-                // when the queue lost the build order (engine dropped it) or
-                // the approach stalled.
-                let next = self
-                    .opening_mexes
-                    .iter()
-                    .copied()
-                    .find(|i| !ordered.contains(i) && !terr.owned[*i] && terr.not_blocked(ctx, *i));
-                if let Some(i) = next {
+                // Standing job: the commander is ALWAYS working a mex — the
+                // nearest empty spot to its current position. Send move+build
+                // as one SHIFT chain (zkgbai pattern): the build stays queued
+                // behind the walk and the commander keeps building until the
+                // mex is finished — it must not walk off leaving a nanoframe.
+                // Re-issue only when the queue lost the build (engine dropped
+                // it) or the approach stalled.
+                if let Some(i) = mex_candidate(ctx, terr, ordered, unit.pos()) {
                     let spot = ctx.spots[i];
                     let d = unit.pos().distance_2d(spot);
                     let busy = unit.num_current_commands() > 0;
                     let has_build = has_queued_mex_build(&unit, mex, spot);
                     let stalled =
                         self.com_mex.is_some_and(|(s, sent, best)| s == i && ctx.frame - sent > 300 && d > best - 32.0);
-                    if !has_build
-                        && (!busy || stalled)
-                        && war.can_spend(ctx, ProjectKind::Expansion, metal_cost(ctx, mex))
-                        && cur >= metal_cost(ctx, mex)
-                    {
+                    // Mexes are paid per frame out of build power, not up
+                    // front — don't gate on `cur >= cost`, or the commander
+                    // idles with metal sitting in storage.
+                    if !has_build && (!busy || stalled) && war.can_spend(ctx, ProjectKind::Expansion, 0.0) {
                         if d > 200.0 {
                             unit.move_to(spot, opt::NONE);
                             build_mex(cb, unit, mex, spot, opt::SHIFT_KEY);
@@ -413,6 +437,13 @@ impl Economy {
                             build_mex(cb, unit, mex, spot, opt::NONE);
                         }
                         ordered.insert(i);
+                        self.com_mex = Some((i, ctx.frame, d));
+                        return;
+                    }
+                    // Can't build right now (queue busy / budget window closed):
+                    // at least keep walking toward the closest empty spot.
+                    if !busy && !has_build {
+                        unit.move_to(spot, opt::NONE);
                         self.com_mex = Some((i, ctx.frame, d));
                     }
                 }
@@ -482,20 +513,33 @@ impl Economy {
         }
         if let Some(mex) = ctx.defs.mex
             && let Some(i) = terr.expansion_spot(ctx, ordered)
-            && war.can_spend(ctx, ProjectKind::Expansion, metal_cost(ctx, mex))
-            && cur >= metal_cost(ctx, mex)
         {
-            // move + build as one SHIFT chain so the worker keeps building
-            // until the mex is finished instead of walking off
+            // Same standing job as the opening: build the expansion spot, or
+            // at least walk to it when no build can be issued. Mexes are paid
+            // per frame from build power — no `cur >= cost` gate.
             let spot = ctx.spots[i];
-            if unit.pos().distance_2d(spot) > 200.0 {
-                unit.move_to(spot, opt::NONE);
-                build_mex(cb, unit, mex, spot, opt::SHIFT_KEY);
-            } else {
-                build_mex(cb, unit, mex, spot, opt::NONE);
+            let d = unit.pos().distance_2d(spot);
+            let busy = unit.num_current_commands() > 0;
+            let has_build = has_queued_mex_build(&unit, mex, spot);
+            let stalled =
+                self.com_mex.is_some_and(|(s, sent, best)| s == i && ctx.frame - sent > 300 && d > best - 32.0);
+            if !has_build && (!busy || stalled) && war.can_spend(ctx, ProjectKind::Expansion, 0.0) {
+                // move + build as one SHIFT chain so the commander keeps
+                // building until the mex is finished instead of walking off
+                if d > 200.0 {
+                    unit.move_to(spot, opt::NONE);
+                    build_mex(cb, unit, mex, spot, opt::SHIFT_KEY);
+                } else {
+                    build_mex(cb, unit, mex, spot, opt::NONE);
+                }
+                ordered.insert(i);
+                self.com_mex = Some((i, ctx.frame, d));
+                return;
             }
-            ordered.insert(i);
-            return;
+            if !busy && !has_build {
+                unit.move_to(spot, opt::NONE);
+                self.com_mex = Some((i, ctx.frame, d));
+            }
         }
         // solar backup when below 80% energy parity (income < 0.8 * usage)
         if let Some(energy) = ctx.energy
