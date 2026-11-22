@@ -25,7 +25,7 @@ use crate::porc::Porc;
 use crate::sabotage::Sabotage;
 use crate::territory::Territory;
 use crate::threat::{Threat, UPDATE_FRAMES};
-use crate::war_chest::{WarChest, WarChestOpts};
+use crate::war_chest::{ProjectState, WarChest, WarChestOpts};
 
 /// Start-script options (declared in `data/AIOptions.lua`).
 pub struct Opts {
@@ -625,6 +625,33 @@ impl Zktdai {
             },
             "threat": {"tracked": self.threat.tracked()},
             "war": war,
+            // Projects window: who is dedicated to what right now.
+            "commander": {
+                "opening": self.eco.opening_tag(),
+                "mex_spot": self.eco.com_mex_spot(),
+            },
+            "jobs": self
+                .planner
+                .job_groups()
+                .iter()
+                .map(|(j, ids)| json!({"job": format!("{j:?}"), "units": ids}))
+                .collect::<Vec<_>>(),
+            "projects": self
+                .war
+                .projects
+                .iter()
+                .filter(|p| p.state != ProjectState::Done && p.state != ProjectState::Failed)
+                .map(|p| {
+                    json!({
+                        "name": p.name,
+                        "kind": format!("{:?}", p.kind),
+                        "state": format!("{:?}", p.state),
+                        "builder": p.builder,
+                        "target": p.target.map(|u| u.id()),
+                        "reserved": p.reserved,
+                    })
+                })
+                .collect::<Vec<_>>(),
         })
         .to_string()
     }

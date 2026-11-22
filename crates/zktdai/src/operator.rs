@@ -253,6 +253,7 @@ body{background:#111;color:#ccc;font:13px monospace;margin:8px}
 h3{margin:4px 0}
 img{image-rendering:pixelated;width:640px;border:1px solid #333;background:#000}
 pre{background:#1a1a1a;padding:8px;max-height:42vh;overflow:auto;white-space:pre-wrap}
+table{border-collapse:collapse}td,th{padding:1px 12px 1px 0;border-bottom:1px solid #222;text-align:left}
 a{color:#8af}
 </style></head><body>
 <h3>ZKTDAI operator — <span id=h>…</span></h3>
@@ -262,13 +263,32 @@ a{color:#8af}
 units: <span style=color:#ee6>yellow</span>=commander <span style=color:#3e6>green</span>=worker
 <span style=color:#48f>blue square</span>=building <span style=color:#0ff>cyan</span>=army ·
 enemies <span style=color:#f28>red</span> · <span style=color:#f8f>magenta</span>=front</div>
+<h3>Projects</h3>
+<table id=proj><tr><th>project</th><th>units dedicated</th><th>state</th></tr></table>
 <pre id=s>…</pre>
 <a href="/snapshot">snapshot</a> · <a href="/board.png">board.png</a> · <a href="/health">health</a>
 <script>
-const b=document.getElementById('b'),s=document.getElementById('s'),h=document.getElementById('h');
+const b=document.getElementById('b'),s=document.getElementById('s'),h=document.getElementById('h'),p=document.getElementById('proj');
+function esc(x){return String(x).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function renderProj(j){
+  const rows=[['<th>project</th><th>units dedicated</th><th>state</th>']];
+  if(j.commander){
+    let t='commander: '+j.commander.opening;
+    if(j.commander.mex_spot!=null)t+=' → mex spot #'+j.commander.mex_spot;
+    rows.push([t,'1 (commander)','']);
+  }
+  (j.jobs||[]).forEach(g=>rows.push(['job: '+g.job,g.units.length+' con ['+g.units.join(',')+']','']));
+  (j.projects||[]).forEach(x=>{
+    let who=[];
+    if(x.builder!=null)who.push('builder u='+x.builder);
+    if(x.target!=null)who.push('building u='+x.target);
+    rows.push(['project: '+x.name, who.join(', ')||'—', x.state+' · '+x.kind+' · reserved '+Math.round(x.reserved)+'m']);
+  });
+  p.innerHTML=rows.map(r=>'<tr>'+r.map(c=>'<td>'+esc(c)+'</td>').join('')+'</tr>').join('');
+}
 async function tick(){
   try{const r=await fetch('/health');const j=await r.json();h.textContent='frame '+j.frame+' · '+j.name+' '+j.version;}catch(e){h.textContent='(not up yet)';}
-  try{const r=await fetch('/snapshot');s.textContent=JSON.stringify(await r.json(),null,1);}catch(e){}
+  try{const r=await fetch('/snapshot');const j=await r.json();s.textContent=JSON.stringify(j,null,1);renderProj(j);}catch(e){}
   b.src='/board.png?t='+Date.now();
 }
 tick();setInterval(tick,1000);

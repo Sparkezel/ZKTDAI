@@ -122,6 +122,17 @@ impl Planner {
         self.jobs.contains_key(&id)
     }
 
+    /// Constructor assignments grouped by job (for the operator projects view).
+    pub fn job_groups(&self) -> Vec<(ConJob, Vec<i32>)> {
+        let mut groups: HashMap<ConJob, Vec<i32>> = HashMap::new();
+        for (id, job) in &self.jobs {
+            groups.entry(*job).or_default().push(*id);
+        }
+        let mut v: Vec<(ConJob, Vec<i32>)> = groups.into_iter().collect();
+        v.sort_by(|a, b| format!("{:?}", a.0).cmp(&format!("{:?}", b.0)));
+        v
+    }
+
     /// How many constructors we want in total right now: 1 energy + 1 base +
     /// up to 3 expansion + a reclaim pool that grows with income.
     pub fn wanted_cons(&self, ctx: &Ctx, terr: &Territory) -> usize {
