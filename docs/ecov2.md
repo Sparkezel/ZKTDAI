@@ -143,7 +143,30 @@ apply at creation time.
    from `UnitDamaged`, feature-based reclaim, split area reclaim, terraform-assist
    repair jobs, footprint-overlap dedupe for turret sites.
 
-## 7. Open questions
+## 7. Energy gridding with mexes — concrete tasks
+
+Current state (branch @ 666a0c6): the opening (`economy.rs` `Opening::WindGrid`)
+builds a pylon chain base → home mexes (`plan_grid_pylons`, 0.9×pylonrange spacing)
+then winds at midpoints between home mexes; steady state (`planner.rs` `energy_step`)
+builds power at the frontier owned mex (`territory.rs` `frontier_spot`). Gaps, as
+tasks:
+
+1. **Per-mex energy**: Expand job, after securing a mex cluster (lotus/picket), also
+   queues one small energy plant at the mex (Energy bucket) — players grid a
+   solar/wind per mex, not one per frontier push.
+2. **Pylon extension on expansion**: recompute/extend the pylon chain to newly
+   owned clusters (`plan_grid_pylons` per cluster) so frontier mexes can overdrive.
+3. **Elevation-weighted wind placement** (ZK wind output scales with elevation —
+   see `docs/possible-helk-integration.md` §5): when placing wind, prefer high ground
+   (`Map::elevation_at`); optionally RAISE a pad under wind farms via `terraform.rs`.
+4. **Invalid build-site cache with TTL**: remember cells where
+   `find_closest_build_site`/`is_possible_to_build_at` failed (Hel-K `TestBuild`
+   memory) so `build_at_clear` stops re-proposing dead cells every 300 f tick.
+5. **Lattice layout for mass energy** (Hel-K paint-farm `FARM_SCALE`): when gridding
+   a base area, tile with cell = footprint + gap, neat-squares snapping, rows from
+   base toward mexes — replaces the current single `build_at(our_start, 300)` blob.
+
+## 8. Open questions
 
 - Should Expand roles be loanable to the queue at all (risk: unsecured mex clusters), or
   strictly dedicated until territory target is hit?
