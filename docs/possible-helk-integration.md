@@ -69,6 +69,23 @@ cloaked units), `unit_cloakfirestate2.lua`, `unit_decloak_range.lua`,
   `unit_decloak_range.lua`: danger-zone / close-enemy-range display when enemies are
   in LOS.
 
+### 5. Energy gridding ("paint farm")
+- `draw_placements.lua` paint-farm mode (lines 778–797, 1199, 1679+): drag-to-paint
+  chains of energy buildings. Key algorithms: `FARM_SCALE`/`MAX_SCALE` per-def
+  **separation in half-sizes** (energywind 1..3, energysolar up to 7 → spacing =
+  footprint + gap), `FARM_SPREAD` grid-brush radius around cursor, "neat squares"
+  lattice snapping (`options.neatfarm`), **`TestBuild` invalid-site memory** (rejected
+  cells are remembered, not re-proposed), straight-row placement along the drag path.
+- `gui_persistent_build_spacing.lua` (693): engine `Spring.Get/SetBuildSpacing` for
+  repeat-placement offset (we issue individual build orders, so we compute spacing
+  ourselves from `xsize/zsize*4 + gap`).
+- **ZK wind note (from playtesting, not the widget)**: wind output is map-global
+  (`wind_min/wind_max`) *and* **scales with elevation** — turbines placed higher on
+  the map produce more. So unlike solar (uniform), wind *does* have per-spot quality:
+  prefer high ground for winds (we have `Map::elevation_at`), and terraform RAISE pads
+  under wind farms on low maps (ties into `persistent_build_height2` leveling and our
+  `terraform.rs`).
+
 ## What we can implement from it (ranked, mapped to our modules)
 
 1. **Enemy range/threat model → new `crates/zktdai/src/ranges.rs`**: port
@@ -91,6 +108,14 @@ cloaked units), `unit_cloakfirestate2.lua`, `unit_decloak_range.lua`,
    builder and low progress (`cmd_fix_unfinished_build.lua`, `unit_ghostSite3.lua`).
 6. **Combat micro → `army.rs` / `sabotage.rs`**: auto-bury (`cmd_bury_me.lua`),
    pursue/keep-target, decloak-range awareness (`unit_decloak_range.lua`).
+7. **Energy gridding → `planner.rs` Energy job / `economy.rs` WindGrid arm**: port
+   paint-farm as a layout algorithm, not a UI — lattice grid with per-def spacing
+   (`FARM_SCALE`: cell = footprint + gap), neat-squares snapping, straight rows from
+   base toward mexes, **invalid-cell cache with TTL** (TestBuild memory; stops our
+   `build_at` retry loop re-proposing dead cells every 300 f), and **wind on high
+   ground** (elevation-weighted site choice via `Map::elevation_at`, optional RAISE
+   pads under wind farms via terraform). Keep our `wants_energy`/parity gating — paint
+   one row at a time as the deficit grows, don't mass-paint.
 
 ## Gaps in our bindings to close for #1
 Per-def weapon list iteration (UnitDef → weaponDef ids) and ballistic params
