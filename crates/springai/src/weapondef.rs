@@ -4,7 +4,8 @@ use crate::macros::{getters, handle};
 
 handle!(
     /// A weapon type definition.
-    WeaponDef, def_id
+    WeaponDef,
+    def_id
 );
 
 getters!(WeaponDef.def_id {

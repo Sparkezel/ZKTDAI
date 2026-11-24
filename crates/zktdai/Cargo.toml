@@ -1,6 +1,6 @@
 [package]
 name = "zktdai"
-version = "0.1.0"
+version = "0.2.0"
 description = "Zero-K tactical-doctrine AI: offensive-defense, map control, perimeter porc and sabotage"
 edition.workspace = true
 license.workspace = true
@@ -16,3 +16,5 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 springai.workspace = true
 checkpoint.workspace = true
+png = "0.18"
+serde_json = "1"

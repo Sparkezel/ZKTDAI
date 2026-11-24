@@ -11,9 +11,16 @@ mod ai;
 mod army;
 mod defs;
 mod economy;
+mod fob;
+mod fortify;
+mod operator;
+mod planner;
 mod porc;
 mod sabotage;
+mod terraform;
 mod territory;
+mod threat;
+mod war_chest;
 
 pub use ai::Zktdai;
 

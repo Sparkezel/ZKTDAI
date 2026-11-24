@@ -23,7 +23,8 @@ pub const NO_TIMEOUT: i32 = i32::MAX;
 handle!(
     /// A unit, friendly or enemy. Queries on units the AI cannot see return
     /// engine defaults (zero positions, `None` defs).
-    Unit, unit_id
+    Unit,
+    unit_id
 );
 
 getters!(Unit.unit_id {
@@ -198,8 +199,16 @@ macro_rules! unit_cmd {
 /// [reserved](crate::reserved) units are dropped.
 impl Unit {
     pub fn build(&self, def: UnitDef, pos: Vec3, facing: i32, opts: i16) -> bool {
+        self.build_timed(def, pos, facing, opts, NO_TIMEOUT)
+    }
+
+    /// Like [`build`](Self::build) but the order times out at `timeout`
+    /// (CircuitAI uses 60 s): a build the engine silently dropped or that
+    /// never executed is finished by timeout and can be re-issued, instead of
+    /// lingering in the queue forever.
+    pub fn build_timed(&self, def: UnitDef, pos: Vec3, facing: i32, opts: i16, timeout: i32) -> bool {
         let mut p = pos.to_array();
-        unit_cmd!(self, COMMAND_UNIT_BUILD, SBuildUnitCommand, opts, NO_TIMEOUT,
+        unit_cmd!(self, COMMAND_UNIT_BUILD, SBuildUnitCommand, opts, timeout,
             toBuildUnitDefId: def.id(), buildPos_posF3: p.as_mut_ptr(), facing: facing)
     }
 
@@ -211,23 +220,31 @@ impl Unit {
         unit_cmd!(self, COMMAND_UNIT_WAIT, SWaitUnitCommand, opts, NO_TIMEOUT)
     }
 
+    /// A position with `y` snapped to the terrain height. The engine moves
+    /// units on the ground plane regardless of `y`, but the order flag/marker
+    /// is drawn at `y` — passing a stale or zero `y` makes queued move orders
+    /// show up buried or floating in the sky, so always send ground height.
+    fn ground_pos(&self, pos: Vec3) -> Vec3 {
+        Vec3::new(pos.x, self.cb.map().elevation_at(pos.x, pos.z), pos.z)
+    }
+
     pub fn move_to(&self, pos: Vec3, opts: i16) -> bool {
         self.move_to_timeout(pos, opts, NO_TIMEOUT)
     }
 
     /// Move with an absolute expiry frame for the order.
     pub fn move_to_timeout(&self, pos: Vec3, opts: i16, timeout: i32) -> bool {
-        let mut p = pos.to_array();
+        let mut p = self.ground_pos(pos).to_array();
         unit_cmd!(self, COMMAND_UNIT_MOVE, SMoveUnitCommand, opts, timeout, toPos_posF3: p.as_mut_ptr())
     }
 
     pub fn patrol_to(&self, pos: Vec3, opts: i16) -> bool {
-        let mut p = pos.to_array();
+        let mut p = self.ground_pos(pos).to_array();
         unit_cmd!(self, COMMAND_UNIT_PATROL, SPatrolUnitCommand, opts, NO_TIMEOUT, toPos_posF3: p.as_mut_ptr())
     }
 
     pub fn fight(&self, pos: Vec3, opts: i16) -> bool {
-        let mut p = pos.to_array();
+        let mut p = self.ground_pos(pos).to_array();
         unit_cmd!(self, COMMAND_UNIT_FIGHT, SFightUnitCommand, opts, NO_TIMEOUT, toPos_posF3: p.as_mut_ptr())
     }
 
@@ -241,7 +258,7 @@ impl Unit {
     }
 
     pub fn attack_area(&self, pos: Vec3, radius: f32, opts: i16) -> bool {
-        let mut p = pos.to_array();
+        let mut p = self.ground_pos(pos).to_array();
         unit_cmd!(self, COMMAND_UNIT_ATTACK_AREA, SAttackAreaUnitCommand, opts, NO_TIMEOUT,
             toAttackPos_posF3: p.as_mut_ptr(), radius: radius)
     }

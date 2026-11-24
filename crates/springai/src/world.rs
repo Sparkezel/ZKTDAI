@@ -457,12 +457,28 @@ impl Map {
     pub fn resource_map_spots(&self, res: Resource) -> Vec<Vec3> {
         let cb = self.cb;
         let floats = read_floats(|buf, max| ffi!(cb, Map_getResourceMapSpotsPositions, res.id(), buf, max));
-        floats.chunks_exact(3).map(|c| Vec3::new(c[0], c[1], c[2])).collect()
+        let (chunks, _) = floats.as_chunks::<3>();
+        chunks.iter().map(|c| Vec3::new(c[0], c[1], c[2])).collect()
     }
 
     /// Radius around a spot within which an extractor (mex) works it.
     pub fn extractor_radius(&self, res: Resource) -> f32 {
         ffi!(self.cb, Map_getExtractorRadius, res.id())
+    }
+
+    /// Map wind bounds, in elmos of wind: turbines output between these
+    /// (Zero-K caps max wind at 2.5); the per-spot minimum rises with altitude.
+    pub fn wind_min(&self) -> f32 {
+        ffi!(self.cb, Map_getMinWind)
+    }
+
+    pub fn wind_max(&self) -> f32 {
+        ffi!(self.cb, Map_getMaxWind)
+    }
+
+    /// Current wind strength.
+    pub fn wind_cur(&self) -> f32 {
+        ffi!(self.cb, Map_getCurWind)
     }
 
     /// Draw a labelled marker point (visible to allies).
