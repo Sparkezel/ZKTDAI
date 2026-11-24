@@ -417,7 +417,6 @@ impl Canvas {
         }
     }
 
-    #[allow(dead_code)]
     fn blend(&mut self, x: i32, y: i32, c: [u8; 3], alpha: f32) {
         if x >= 0 && y >= 0 && (x as usize) < self.w && (y as usize) < self.h {
             let p = &mut self.px[y as usize * self.w + x as usize];
@@ -490,6 +489,45 @@ impl Canvas {
             if e2 <= dx {
                 err += dx;
                 y0 += sy;
+            }
+        }
+    }
+
+    /// Bresenham line with alpha blending (for the faint fight-direction lines).
+    fn line_alpha(&mut self, (mut x0, mut y0): (i32, i32), (x1, y1): (i32, i32), c: [u8; 3], alpha: f32) {
+        let dx = (x1 - x0).abs();
+        let dy = -(y1 - y0).abs();
+        let sx = if x0 < x1 { 1 } else { -1 };
+        let sy = if y0 < y1 { 1 } else { -1 };
+        let mut err = dx + dy;
+        loop {
+            self.blend(x0, y0, c, alpha);
+            if x0 == x1 && y0 == y1 {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                x0 += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y0 += sy;
+            }
+        }
+    }
+
+    /// Small arrowhead at `tip` pointing along (tip - from): two short wings.
+    fn arrow_head(&mut self, from: (i32, i32), tip: (i32, i32), c: [u8; 3], alpha: f32) {
+        let (fx, fy) = (tip.0 as f32 - from.0 as f32, tip.1 as f32 - from.1 as f32);
+        let len = (fx * fx + fy * fy).sqrt().max(1.0);
+        let (dx, dy) = (fx / len, fy / len);
+        let (px, py) = (-dy, dx);
+        for wing in [-1.0, 1.0] {
+            for t in [2.0, 4.0, 6.0] {
+                let bx = tip.0 as f32 - dx * t + px * wing * t * 0.5;
+                let by = tip.1 as f32 - dy * t + py * wing * t * 0.5;
+                self.blend(bx.round() as i32, by.round() as i32, c, alpha);
             }
         }
     }
@@ -606,6 +644,9 @@ pub struct BoardState {
     pub our_start: Vec3,
     pub front: Vec3,
     pub enemy_target: Vec3,
+    /// Faint (0.3 alpha) attacker -> target lines for fights between units we
+    /// are not currently tracking — fight directionality on the big map.
+    pub fight_lines: Vec<(Vec3, Vec3)>,
 }
 
 /// Draw the board over the terrain; PNG bytes.
@@ -660,6 +701,14 @@ pub fn render_board(state: &BoardState, terrain: &Terrain) -> Vec<u8> {
     let (fx, fy) = c.at(state.front);
     c.ring(fx, fy, 6, [255, 80, 255]);
     c.ring(fx, fy, 7, [255, 80, 255]);
+    // Fight directionality: 0.3-alpha orange lines attacker -> target with an
+    // arrowhead at the target, for engaged pairs we are not currently tracking.
+    for (a, b) in &state.fight_lines {
+        let (ax, ay) = c.at(*a);
+        let (bx, by) = c.at(*b);
+        c.line_alpha((ax, ay), (bx, by), [255, 140, 40], 0.3);
+        c.arrow_head((ax, ay), (bx, by), [255, 140, 40], 0.3);
+    }
     // Enemies in radar+LOS: red, statics as squares.
     for e in &state.enemies {
         let (x, y) = c.at(Vec3::xz(e.x, e.z));
@@ -715,6 +764,8 @@ mod tests {
         c.ring(30, 30, 5, [0, 255, 0]);
         c.square(50, 10, 2, [0, 0, 255]);
         c.line((0, 0), (63, 47), [255, 255, 255]);
+        c.line_alpha((0, 47), (63, 0), [255, 140, 40], 0.3);
+        c.arrow_head((0, 47), (63, 0), [255, 140, 40], 0.3);
         c.text(2, 2, "12k", [200, 200, 200]);
         let png = encode(&c);
         assert_eq!(&png[1..4], b"PNG");

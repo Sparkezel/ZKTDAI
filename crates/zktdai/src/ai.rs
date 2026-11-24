@@ -491,8 +491,9 @@ impl SkirmishAi for Zktdai {
                 self.threat.note_enemy(&self.ctx, enemy);
             }
             Event::WeaponFired { unit, .. } => self.porc.note_combat(unit, self.ctx.frame),
-            Event::UnitDamaged { unit, .. } => {
+            Event::UnitDamaged { unit, attacker, .. } => {
                 self.porc.note_damage(&self.ctx, unit.pos(), self.ctx.frame);
+                self.threat.note_engaged(&self.ctx, attacker, unit);
                 self.maybe_retreat(unit);
             }
             Event::LuaMessage { data } => {
@@ -709,6 +710,7 @@ impl Zktdai {
             our_start: self.ctx.our_start,
             front: self.terr.front,
             enemy_target: self.ctx.enemy_target,
+            fight_lines: self.threat.fight_lines(frame),
         };
         Some(operator::render_board(&state, terrain))
     }

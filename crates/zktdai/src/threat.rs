@@ -37,6 +37,24 @@ const CELL: f32 = 1024.0;
 pub const UPDATE_FRAMES: i32 = 60;
 /// How often the `[threat]` status line is logged (30 s).
 const LOG_FRAMES: i32 = 900;
+/// An engagement stays "fresh" for this many frames (30 s) after the last hit.
+const FIGHT_STALE_FRAMES: i32 = 900;
+
+/// A fight we overheard: attacker -> target, at the positions where it happened.
+/// Used for the operator board's 0.3-alpha directionality lines between engaged
+/// units we are not currently tracking.
+#[derive(Clone, Copy, Debug)]
+struct Engagement {
+    a: Vec3,
+    b: Vec3,
+    frame: i32,
+}
+
+/// Whether an engaged pair involves a unit we are not currently tracking.
+/// Pure helper, unit-tested below.
+fn involves_untracked(seen: &HashMap<i32, Sighting>, a: i32, b: i32) -> bool {
+    !(seen.contains_key(&a) && seen.contains_key(&b))
+}
 
 /// One tracked enemy: last seen position, def speed (elmos/s, see sabotage),
 /// and the frame it was last seen.
@@ -62,12 +80,36 @@ fn cell_of(pos: Vec3) -> (i32, i32) {
 pub struct Threat {
     /// Enemy unit id -> last sighting.
     seen: HashMap<i32, Sighting>,
+    /// (attacker id, target id) -> last engagement (for the operator board).
+    engaged: HashMap<(i32, i32), Engagement>,
     next_log: i32,
 }
 
 impl Threat {
     pub fn new() -> Self {
-        Threat { seen: HashMap::new(), next_log: LOG_FRAMES }
+        Threat { seen: HashMap::new(), engaged: HashMap::new(), next_log: LOG_FRAMES }
+    }
+
+    /// Record a hit: `attacker` damaged `target` (from `UnitDamaged`).
+    pub fn note_engaged(&mut self, ctx: &Ctx, attacker: Option<Unit>, target: Unit) {
+        let Some(a) = attacker else { return };
+        if a.id() == target.id() {
+            return;
+        }
+        self.engaged.insert((a.id(), target.id()), Engagement { a: a.pos(), b: target.pos(), frame: ctx.frame });
+    }
+
+    /// Fresh engagement lines (attacker pos -> target pos) between units we are
+    /// not currently tracking — for the operator board's faint directionality
+    /// lines. Pairs where both endpoints are live-tracked are skipped: those
+    /// fights are already visible as red dots on the board.
+    pub fn fight_lines(&self, frame: i32) -> Vec<(Vec3, Vec3)> {
+        self.engaged
+            .iter()
+            .filter(|(_, e)| frame - e.frame <= FIGHT_STALE_FRAMES)
+            .filter(|((a, b), _)| involves_untracked(&self.seen, *a, *b))
+            .map(|(_, e)| (e.a, e.b))
+            .collect()
     }
 
     /// Immediate sighting from an enemy event (created / entered LOS / finished).
@@ -79,8 +121,10 @@ impl Threat {
         self.seen.insert(enemy.id(), Sighting { pos: enemy.pos(), speed, frame: ctx.frame });
     }
 
-    /// Periodic full scan of radar+LOS plus pruning of stale sightings.
+    /// Periodic full scan of radar+LOS plus pruning of stale sightings and
+    /// stale engagements.
     pub fn update(&mut self, ctx: &Ctx) {
+        self.engaged.retain(|_, e| ctx.frame - e.frame <= FIGHT_STALE_FRAMES);
         if !ctx.opts.threatmap {
             self.seen.clear();
             return;
@@ -194,6 +238,17 @@ mod tests {
         assert_eq!(eta_frames(30.0, 0.0), 900);
         // ceiling on partial frames
         assert_eq!(eta_frames(1.0, 60.0), 1);
+    }
+
+    #[test]
+    fn untracked_pair_filter() {
+        let mut seen = HashMap::new();
+        seen.insert(7, Sighting { pos: Vec3::xz(0.0, 0.0), speed: 60.0, frame: 0 });
+        // both tracked -> no line; one or both untracked -> line
+        assert!(!involves_untracked(&seen, 7, 7));
+        assert!(involves_untracked(&seen, 7, 8));
+        assert!(involves_untracked(&seen, 8, 9));
+        assert!(involves_untracked(&HashMap::new(), 7, 8));
     }
 
     #[test]
